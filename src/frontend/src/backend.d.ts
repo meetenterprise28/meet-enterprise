@@ -7,6 +7,8 @@ export interface None {
     __kind__: "None";
 }
 export type Option<T> = Some<T> | None;
+
+// Full product with image data - returned by getProductById()
 export interface Product {
     id: bigint;
     mrp: bigint;
@@ -20,6 +22,20 @@ export interface Product {
     image: Uint8Array;
     colours: Array<string>;
 }
+
+// Lightweight product summary without image - returned by getProducts()
+export interface ProductSummary {
+    id: bigint;
+    mrp: bigint;
+    categoryId: bigint;
+    inStock: boolean;
+    discountAmount: bigint;
+    name: string;
+    description: string;
+    sizes: Array<string>;
+    colours: Array<string>;
+}
+
 export interface PaymentSettings {
     qrImage: Uint8Array;
     qrImageType: string;
@@ -64,6 +80,21 @@ export interface UserProfile {
     name: string;
     whatsapp: string;
 }
+
+// New types added for extended features
+export interface Reel {
+    id: bigint;
+    title: string;
+    videoUrl: string;
+    productId: bigint | null;
+    createdAt: bigint;
+}
+
+export interface ProductRating {
+    average: number;
+    count: bigint;
+}
+
 export enum UserRole {
     admin = "admin",
     user = "user",
@@ -71,9 +102,11 @@ export enum UserRole {
 }
 export interface backendInterface {
     assignCallerUserRole(user: Principal, role: UserRole): Promise<void>;
-    createCategory(name: string): Promise<Category>;
-    createOrder(items: Array<OrderItem>, paymentMethod: string, deliveryLocation: string): Promise<Order>;
-    createProduct(productInfo: {
+    // Admin functions (require adminToken)
+    createCategory(adminToken: string, name: string): Promise<Category>;
+    updateCategory(adminToken: string, id: bigint, name: string): Promise<Category>;
+    deleteCategory(adminToken: string, id: bigint): Promise<void>;
+    createProduct(adminToken: string, productInfo: {
         mrp: bigint;
         categoryId: bigint;
         inStock: boolean;
@@ -84,40 +117,45 @@ export interface backendInterface {
         sizes: Array<string>;
         image: Uint8Array;
         colours: Array<string>;
-    }): Promise<Product>;
-    createScheme(title: string, description: string, couponCode: string): Promise<Scheme>;
-    deleteCategory(id: bigint): Promise<void>;
-    deleteProduct(id: bigint): Promise<void>;
-    deleteScheme(id: bigint): Promise<void>;
-    getAllOrders(): Promise<Array<Order>>;
-    getAllUsers(): Promise<Array<UserProfile>>;
-    getAllVouchers(): Promise<Array<Voucher>>;
+    }): Promise<ProductSummary>;
+    updateProduct(adminToken: string, id: bigint, productInfo: {
+        mrp: bigint;
+        categoryId: bigint;
+        inStock: boolean;
+        imageType: string;
+        discountAmount: bigint;
+        name: string;
+        description: string;
+        sizes: Array<string>;
+        image: Uint8Array;
+        colours: Array<string>;
+    }): Promise<ProductSummary>;
+    deleteProduct(adminToken: string, id: bigint): Promise<void>;
+    createScheme(adminToken: string, title: string, description: string, couponCode: string): Promise<Scheme>;
+    deleteScheme(adminToken: string, id: bigint): Promise<void>;
+    getAllOrders(adminToken: string): Promise<Array<Order>>;
+    getAllUsers(adminToken: string): Promise<Array<UserProfile>>;
+    getAllVouchers(adminToken: string): Promise<Array<Voucher>>;
+    updateOrderStatus(adminToken: string, orderId: string, status: string): Promise<void>;
+    setPaymentSettings(adminToken: string, upiId: string, qrImage: Uint8Array, qrImageType: string): Promise<void>;
+    // Public / user functions (no admin token)
     getCallerUserProfile(): Promise<UserProfile | null>;
     getCallerUserRole(): Promise<UserRole>;
     getCategories(): Promise<Array<Category>>;
     getOrderById(orderId: string): Promise<Order | null>;
     getPaymentSettings(): Promise<PaymentSettings | null>;
-    getProductById(id: bigint): Promise<Product>;
-    getProducts(): Promise<Array<Product>>;
+    getProductById(id: bigint): Promise<Product>;  // returns full product with image
+    getProducts(): Promise<Array<ProductSummary>>;  // returns products WITHOUT image data
     getSchemes(): Promise<Array<Scheme>>;
     getUserOrders(userId: Principal): Promise<Array<Order>>;
     getUserProfile(user: Principal): Promise<UserProfile | null>;
     getUserVouchers(userId: Principal): Promise<Array<Voucher>>;
     isCallerAdmin(): Promise<boolean>;
     saveCallerUserProfile(name: string, whatsapp: string): Promise<void>;
-    setPaymentSettings(upiId: string, qrImage: Uint8Array, qrImageType: string): Promise<void>;
-    updateCategory(id: bigint, name: string): Promise<Category>;
-    updateOrderStatus(orderId: string, status: string): Promise<void>;
-    updateProduct(id: bigint, productInfo: {
-        mrp: bigint;
-        categoryId: bigint;
-        inStock: boolean;
-        imageType: string;
-        discountAmount: bigint;
-        name: string;
-        description: string;
-        sizes: Array<string>;
-        image: Uint8Array;
-        colours: Array<string>;
-    }): Promise<Product>;
+    createReel(adminToken: string, title: string, videoUrl: string, productId: bigint | null): Promise<Reel>;
+    deleteReel(adminToken: string, id: bigint): Promise<void>;
+    getReels(): Promise<Array<Reel>>;
+    generateDeliveryCode(adminToken: string, orderId: string): Promise<string>;
+    verifyDeliveryCode(orderId: string, code: string): Promise<boolean>;
+        createOrder(items: Array<OrderItem>, paymentMethod: string, deliveryLocation: string): Promise<Order>;
 }

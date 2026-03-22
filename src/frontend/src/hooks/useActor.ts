@@ -6,8 +6,6 @@ import { getSecretParameter } from "../utils/urlParams";
 import { useInternetIdentity } from "./useInternetIdentity";
 
 const ACTOR_QUERY_KEY = "actor";
-export const ADMIN_SESSION_KEY = "admin_session";
-
 export function useActor() {
   const { identity } = useInternetIdentity();
   const queryClient = useQueryClient();

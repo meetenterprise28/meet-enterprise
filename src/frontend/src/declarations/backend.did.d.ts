@@ -44,6 +44,17 @@ export interface Product {
   'image' : Uint8Array,
   'colours' : Array<string>,
 }
+export interface ProductSummary {
+  'id' : bigint,
+  'mrp' : bigint,
+  'categoryId' : bigint,
+  'inStock' : boolean,
+  'discountAmount' : bigint,
+  'name' : string,
+  'description' : string,
+  'sizes' : Array<string>,
+  'colours' : Array<string>,
+}
 export interface Scheme {
   'id' : bigint,
   'couponCode' : string,
@@ -78,6 +89,17 @@ export interface _CaffeineStorageRefillResult {
   'success' : [] | [boolean],
   'topped_up_amount' : [] | [bigint],
 }
+export interface Reel {
+  'id' : bigint,
+  'title' : string,
+  'videoUrl' : string,
+  'productId' : [] | [bigint],
+  'createdAt' : bigint,
+}
+export interface RatingSummary {
+  'average' : number,
+  'count' : bigint,
+}
 export interface _SERVICE {
   '_caffeineStorageBlobIsLive' : ActorMethod<[Uint8Array], boolean>,
   '_caffeineStorageBlobsToDelete' : ActorMethod<[], Array<Uint8Array>>,
@@ -96,10 +118,11 @@ export interface _SERVICE {
   '_caffeineStorageUpdateGatewayPrincipals' : ActorMethod<[], undefined>,
   '_initializeAccessControlWithSecret' : ActorMethod<[string], undefined>,
   'assignCallerUserRole' : ActorMethod<[Principal, UserRole], undefined>,
-  'createCategory' : ActorMethod<[string], Category>,
+  'createCategory' : ActorMethod<[string, string], Category>,
   'createOrder' : ActorMethod<[Array<OrderItem>, string, string], Order>,
   'createProduct' : ActorMethod<
     [
+      string,
       {
         'mrp' : bigint,
         'categoryId' : bigint,
@@ -113,33 +136,45 @@ export interface _SERVICE {
         'colours' : Array<string>,
       },
     ],
-    Product
+    ProductSummary
   >,
-  'createScheme' : ActorMethod<[string, string, string], Scheme>,
-  'deleteCategory' : ActorMethod<[bigint], undefined>,
-  'deleteProduct' : ActorMethod<[bigint], undefined>,
-  'deleteScheme' : ActorMethod<[bigint], undefined>,
-  'getAllOrders' : ActorMethod<[], Array<Order>>,
-  'getAllUsers' : ActorMethod<[], Array<UserProfile>>,
-  'getAllVouchers' : ActorMethod<[], Array<Voucher>>,
+  'createScheme' : ActorMethod<[string, string, string, string], Scheme>,
+  'deleteCategory' : ActorMethod<[string, bigint], undefined>,
+  'deleteProduct' : ActorMethod<[string, bigint], undefined>,
+  'deleteScheme' : ActorMethod<[string, bigint], undefined>,
+  'getAllOrders' : ActorMethod<[string], Array<Order>>,
+  'getAllUsers' : ActorMethod<[string], Array<UserProfile>>,
+  'getAllVouchers' : ActorMethod<[string], Array<Voucher>>,
   'getCallerUserProfile' : ActorMethod<[], [] | [UserProfile]>,
   'getCallerUserRole' : ActorMethod<[], UserRole>,
   'getCategories' : ActorMethod<[], Array<Category>>,
   'getOrderById' : ActorMethod<[string], [] | [Order]>,
   'getPaymentSettings' : ActorMethod<[], [] | [PaymentSettings]>,
   'getProductById' : ActorMethod<[bigint], Product>,
-  'getProducts' : ActorMethod<[], Array<Product>>,
+  'getProducts' : ActorMethod<[], Array<ProductSummary>>,
   'getSchemes' : ActorMethod<[], Array<Scheme>>,
   'getUserOrders' : ActorMethod<[Principal], Array<Order>>,
   'getUserProfile' : ActorMethod<[Principal], [] | [UserProfile]>,
   'getUserVouchers' : ActorMethod<[Principal], Array<Voucher>>,
   'isCallerAdmin' : ActorMethod<[], boolean>,
   'saveCallerUserProfile' : ActorMethod<[string, string], undefined>,
-  'setPaymentSettings' : ActorMethod<[string, Uint8Array, string], undefined>,
-  'updateCategory' : ActorMethod<[bigint, string], Category>,
-  'updateOrderStatus' : ActorMethod<[string, string], undefined>,
+  'setPaymentSettings' : ActorMethod<[string, string, Uint8Array, string], undefined>,
+  'updateCategory' : ActorMethod<[string, bigint, string], Category>,
+  'updateOrderStatus' : ActorMethod<[string, string, string], undefined>,
+  'createReel' : ActorMethod<[string, string, string, [] | [bigint]], Reel>,
+  'deleteReel' : ActorMethod<[string, bigint], undefined>,
+  'generateDeliveryCode' : ActorMethod<[string, string], string>,
+  'getDeliveryCode' : ActorMethod<[string, string], [] | [string]>,
+  'getProductRating' : ActorMethod<[bigint], RatingSummary>,
+  'getReels' : ActorMethod<[], Array<Reel>>,
+  'getTheme' : ActorMethod<[], string>,
+  'getUserWishlist' : ActorMethod<[Principal], Array<bigint>>,
+  'rateProduct' : ActorMethod<[bigint, bigint], undefined>,
+  'setTheme' : ActorMethod<[string, string], undefined>,
+  'verifyDeliveryCode' : ActorMethod<[string, string], boolean>,
   'updateProduct' : ActorMethod<
     [
+      string,
       bigint,
       {
         'mrp' : bigint,
@@ -154,7 +189,7 @@ export interface _SERVICE {
         'colours' : Array<string>,
       },
     ],
-    Product
+    ProductSummary
   >,
 }
 export declare const idlService: IDL.ServiceClass;

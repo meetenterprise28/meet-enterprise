@@ -28,12 +28,15 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { useQueryClient } from "@tanstack/react-query";
+
 import {
   Check,
   Edit2,
   Gift,
+  Key,
   Package,
+  Palette,
+  Play,
   Plus,
   Settings,
   ShoppingBag,
@@ -41,36 +44,41 @@ import {
   Trash2,
   Upload,
   Users,
-  X,
 } from "lucide-react";
 import { motion } from "motion/react";
+import type React from "react";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
-import { ADMIN_SESSION_KEY } from "../hooks/useActor";
+import type { Reel } from "../backend.d";
+import { useActor } from "../hooks/useActor";
 import {
   useAllOrders,
   useAllUsers,
-  useAllVouchers,
   useCategories,
   useCreateCategory,
   useCreateProduct,
+  useCreateReel,
   useCreateScheme,
   useDeleteCategory,
   useDeleteProduct,
+  useDeleteReel,
   useDeleteScheme,
   usePaymentSettings,
   useProducts,
+  useReels,
   useSchemes,
   useSetPaymentSettings,
   useUpdateCategory,
   useUpdateOrderStatus,
   useUpdateProduct,
 } from "../hooks/useQueries";
+import { getAdminToken, setAdminToken } from "../utils/adminStore";
 import {
   fileToUint8Array,
   formatPrice,
   uint8ToDataUrl,
 } from "../utils/imageUtils";
+import { THEMES, type ThemeId, applyTheme } from "../utils/themes";
 
 const ADMIN_CODE = "2537";
 const ORDER_STATUSES = [
@@ -78,25 +86,20 @@ const ORDER_STATUSES = [
   "Confirmed",
   "Processing",
   "Shipped",
+  "Out for Delivery",
   "Delivered",
   "Cancelled",
 ];
-const PRESET_SIZES = ["S", "M", "L", "XL", "XXL", "Free Size"];
 
 export function AdminPage() {
-  const [unlocked, setUnlocked] = useState(
-    () => sessionStorage.getItem(ADMIN_SESSION_KEY) === ADMIN_CODE,
-  );
+  const [unlocked, setUnlocked] = useState(false);
   const [code, setCode] = useState("");
   const [error, setError] = useState(false);
-  const queryClient = useQueryClient();
 
   const handleUnlock = () => {
     if (code === ADMIN_CODE) {
-      sessionStorage.setItem(ADMIN_SESSION_KEY, ADMIN_CODE);
+      setAdminToken(code);
       setUnlocked(true);
-      // Invalidate actor so it reinitializes with the admin token
-      queryClient.invalidateQueries({ queryKey: ["actor"] });
     } else {
       setError(true);
       setTimeout(() => setError(false), 1500);
@@ -161,7 +164,7 @@ export function AdminPage() {
         <div className="w-16 h-px bg-gold mb-10" />
 
         <Tabs defaultValue="users">
-          <TabsList className="grid grid-cols-3 md:grid-cols-6 mb-8 bg-secondary border border-gold-border">
+          <TabsList className="grid grid-cols-4 md:grid-cols-8 mb-8 bg-secondary border border-gold-border">
             {[
               {
                 value: "users",
@@ -187,6 +190,16 @@ export function AdminPage() {
                 value: "schemes",
                 icon: <Gift className="w-3.5 h-3.5" />,
                 label: "Schemes",
+              },
+              {
+                value: "reels",
+                icon: <Play className="w-3.5 h-3.5" />,
+                label: "Reels",
+              },
+              {
+                value: "appearance",
+                icon: <Palette className="w-3.5 h-3.5" />,
+                label: "Appearance",
               },
               {
                 value: "settings",
@@ -218,6 +231,12 @@ export function AdminPage() {
           </TabsContent>
           <TabsContent value="schemes">
             <SchemesTab />
+          </TabsContent>
+          <TabsContent value="reels">
+            <ReelsTab />
+          </TabsContent>
+          <TabsContent value="appearance">
+            <AppearanceTab />
           </TabsContent>
           <TabsContent value="settings">
             <SettingsTab />
@@ -310,8 +329,8 @@ function CategoriesTab() {
       await createCategory.mutateAsync(newName.trim());
       setNewName("");
       toast.success("Category created");
-    } catch {
-      toast.error("Failed to create category");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to create category");
     }
   };
 
@@ -321,8 +340,8 @@ function CategoriesTab() {
       await updateCategory.mutateAsync({ id, name: editName.trim() });
       setEditId(null);
       toast.success("Category updated");
-    } catch {
-      toast.error("Failed to update category");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to update category");
     }
   };
 
@@ -331,8 +350,8 @@ function CategoriesTab() {
     try {
       await deleteCategory.mutateAsync(id);
       toast.success("Category deleted");
-    } catch {
-      toast.error("Failed to delete category");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete category");
     }
   };
 
@@ -422,7 +441,7 @@ function CategoriesTab() {
                             className="w-7 h-7"
                             onClick={() => setEditId(null)}
                           >
-                            <X className="w-3 h-3" />
+                            <Settings className="w-3 h-3" />
                           </Button>
                         </div>
                       ) : (
@@ -488,65 +507,85 @@ const DEFAULT_FORM: ProductForm = {
   imageType: "",
 };
 
+function parseCommaSeparated(input: string): string[] {
+  return input
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 function ProductsTab() {
   const { data: products, isLoading } = useProducts();
   const { data: categories } = useCategories();
+  const { actor } = useActor();
   const createProduct = useCreateProduct();
   const updateProduct = useUpdateProduct();
   const deleteProduct = useDeleteProduct();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<bigint | null>(null);
   const [form, setForm] = useState<ProductForm>(DEFAULT_FORM);
+  const [sizeInput, setSizeInput] = useState("");
   const [colourInput, setColourInput] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const resetForm = () => {
     setForm(DEFAULT_FORM);
     setEditingId(null);
+    setSizeInput("");
     setColourInput("");
   };
 
-  const openEdit = (p: any) => {
-    setEditingId(p.id);
-    setForm({
-      name: p.name,
-      description: p.description,
-      mrp: Number(p.mrp).toString(),
-      discountAmount: Number(p.discountAmount).toString(),
-      categoryId: p.categoryId.toString(),
-      inStock: p.inStock,
-      sizes: [...p.sizes],
-      colours: [...p.colours],
-      image: p.image,
-      imageType: p.imageType,
-    });
-    setDialogOpen(true);
+  const openEdit = async (p: {
+    id: bigint;
+    name: string;
+    description: string;
+    mrp: bigint;
+    discountAmount: bigint;
+    categoryId: bigint;
+    inStock: boolean;
+    sizes: string[];
+    colours: string[];
+  }) => {
+    try {
+      if (!actor) {
+        toast.error("Backend not connected");
+        return;
+      }
+      const full = await actor.getProductById(p.id);
+      setEditingId(full.id);
+      setForm({
+        name: full.name,
+        description: full.description,
+        mrp: Number(full.mrp).toString(),
+        discountAmount: Number(full.discountAmount).toString(),
+        categoryId: full.categoryId.toString(),
+        inStock: full.inStock,
+        sizes: [...full.sizes],
+        colours: [...full.colours],
+        image: full.image,
+        imageType: full.imageType || "",
+      });
+      setSizeInput(full.sizes.join(", "));
+      setColourInput(full.colours.join(", "));
+      setDialogOpen(true);
+    } catch {
+      toast.error("Failed to load product details");
+    }
   };
-
-  const toggleSize = (s: string) => {
-    setForm((f) => ({
-      ...f,
-      sizes: f.sizes.includes(s)
-        ? f.sizes.filter((x) => x !== s)
-        : [...f.sizes, s],
-    }));
-  };
-
-  const addColour = () => {
-    const c = colourInput.trim();
-    if (!c || form.colours.includes(c)) return;
-    setForm((f) => ({ ...f, colours: [...f.colours, c] }));
-    setColourInput("");
-  };
-
-  const removeColour = (c: string) =>
-    setForm((f) => ({ ...f, colours: f.colours.filter((x) => x !== c) }));
 
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const result = await fileToUint8Array(file);
-    setForm((f) => ({ ...f, image: result.bytes, imageType: result.type }));
+    try {
+      const result = await fileToUint8Array(file);
+      setForm((f) => ({
+        ...f,
+        image: result.bytes,
+        imageType: result.type || "image/jpeg",
+      }));
+    } catch {
+      toast.error("Could not load image. Please try a JPG or PNG file.");
+    }
   };
 
   const handleSubmit = async () => {
@@ -554,6 +593,8 @@ function ProductsTab() {
       toast.error("Please fill name, MRP and category");
       return;
     }
+    const parsedSizes = parseCommaSeparated(sizeInput);
+    const parsedColours = parseCommaSeparated(colourInput);
     const info = {
       name: form.name,
       description: form.description,
@@ -561,10 +602,10 @@ function ProductsTab() {
       discountAmount: BigInt(Math.round(Number(form.discountAmount) || 0)),
       categoryId: BigInt(form.categoryId),
       inStock: form.inStock,
-      sizes: form.sizes,
-      colours: form.colours,
+      sizes: parsedSizes,
+      colours: parsedColours,
       image: form.image ?? new Uint8Array(),
-      imageType: form.imageType,
+      imageType: form.imageType || "image/jpeg",
     };
     try {
       if (editingId !== null) {
@@ -576,8 +617,8 @@ function ProductsTab() {
       }
       setDialogOpen(false);
       resetForm();
-    } catch {
-      toast.error("Operation failed");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Operation failed");
     }
   };
 
@@ -586,12 +627,15 @@ function ProductsTab() {
     try {
       await deleteProduct.mutateAsync(id);
       toast.success("Product deleted");
-    } catch {
-      toast.error("Failed to delete product");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete product");
     }
   };
 
   const effectivePrice = (p: any) => Number(p.mrp) - Number(p.discountAmount);
+
+  const previewSizes = parseCommaSeparated(sizeInput);
+  const previewColours = parseCommaSeparated(colourInput);
 
   return (
     <div>
@@ -704,74 +748,65 @@ function ProductsTab() {
                   </SelectContent>
                 </Select>
               </div>
+
               {/* Sizes */}
               <div>
-                <Label className="text-xs tracking-widest uppercase text-muted-foreground mb-2 block">
+                <Label className="text-xs tracking-widest uppercase text-muted-foreground mb-1.5 block">
                   Sizes
                 </Label>
-                <div className="flex flex-wrap gap-2">
-                  {PRESET_SIZES.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => toggleSize(s)}
-                      className={`px-3 py-1.5 text-xs border transition-all tracking-wider ${
-                        form.sizes.includes(s)
-                          ? "bg-gold text-background border-gold"
-                          : "border-gold-border text-muted-foreground hover:border-gold"
-                      }`}
-                      data-ocid={`admin.product.size.${s}`}
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
+                <Input
+                  value={sizeInput}
+                  onChange={(e) => setSizeInput(e.target.value)}
+                  placeholder="e.g. S, M, L, XL, XXL"
+                  className="bg-secondary border-gold-border"
+                  data-ocid="admin.product.sizes.input"
+                />
+                <p className="text-xs text-muted-foreground mt-1 mb-1.5">
+                  Separate options with commas
+                </p>
+                {previewSizes.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {previewSizes.map((s) => (
+                      <span
+                        key={s}
+                        className="px-2.5 py-1 text-xs border border-gold-border text-gold bg-gold/5 tracking-wider"
+                      >
+                        {s}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
+
               {/* Colours */}
               <div>
-                <Label className="text-xs tracking-widest uppercase text-muted-foreground mb-2 block">
+                <Label className="text-xs tracking-widest uppercase text-muted-foreground mb-1.5 block">
                   Colours
                 </Label>
-                <div className="flex gap-2 mb-2">
-                  <Input
-                    value={colourInput}
-                    onChange={(e) => setColourInput(e.target.value)}
-                    placeholder="e.g. Red"
-                    className="bg-secondary border-gold-border h-8 text-sm"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        addColour();
-                      }
-                    }}
-                  />
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="btn-gold h-8 text-xs"
-                    onClick={addColour}
-                  >
-                    Add
-                  </Button>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {form.colours.map((c) => (
-                    <span
-                      key={c}
-                      className="flex items-center gap-1 px-2 py-1 bg-secondary border border-gold-border text-xs text-gold"
-                    >
-                      {c}
-                      <button
-                        type="button"
-                        onClick={() => removeColour(c)}
-                        className="text-muted-foreground hover:text-destructive"
+                <Input
+                  value={colourInput}
+                  onChange={(e) => setColourInput(e.target.value)}
+                  placeholder="e.g. Red, Blue, Green"
+                  className="bg-secondary border-gold-border"
+                  data-ocid="admin.product.colours.input"
+                />
+                <p className="text-xs text-muted-foreground mt-1 mb-1.5">
+                  Separate options with commas
+                </p>
+                {previewColours.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {previewColours.map((c) => (
+                      <span
+                        key={c}
+                        className="px-2.5 py-1 text-xs border border-gold-border text-gold bg-gold/5 tracking-wider"
                       >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
+                        {c}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
+
               <div className="flex items-center gap-3">
                 <Switch
                   checked={form.inStock}
@@ -795,6 +830,7 @@ function ProductsTab() {
                   onChange={handleImageChange}
                 />
                 <Button
+                  type="button"
                   variant="outline"
                   className="mt-1 w-full border-gold-border text-muted-foreground hover:text-gold"
                   onClick={() => fileRef.current?.click()}
@@ -859,76 +895,65 @@ function ProductsTab() {
                   </TableCell>
                 </TableRow>
               ) : (
-                products.map((p, idx) => {
-                  const imgSrc = p.image?.length
-                    ? uint8ToDataUrl(p.image, p.imageType)
-                    : null;
-                  return (
-                    <TableRow
-                      key={p.id.toString()}
-                      className="border-gold-border"
-                      data-ocid={`admin.product.item.${idx + 1}`}
-                    >
-                      <TableCell>
-                        {imgSrc ? (
-                          <img
-                            src={imgSrc}
-                            alt={p.name}
-                            className="w-10 h-12 object-cover"
-                          />
-                        ) : (
-                          <div className="w-10 h-12 bg-muted" />
-                        )}
-                      </TableCell>
-                      <TableCell className="font-medium">{p.name}</TableCell>
-                      <TableCell>
-                        <span className="text-muted-foreground line-through text-xs">
-                          {formatPrice(p.mrp)}
-                        </span>
-                        <br />
-                        <span className="text-gold text-sm">
-                          {formatPrice(effectivePrice(p))}
-                        </span>
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {p.sizes.join(", ") || "—"}
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          className={
-                            p.inStock
-                              ? "bg-green-900/30 text-green-400 border-green-800"
-                              : "bg-red-900/30 text-red-400 border-red-800"
-                          }
+                products.map((p, idx) => (
+                  <TableRow
+                    key={p.id.toString()}
+                    className="border-gold-border"
+                    data-ocid={`admin.product.item.${idx + 1}`}
+                  >
+                    <TableCell>
+                      <div className="w-10 h-12 bg-muted flex items-center justify-center">
+                        <Tag className="w-4 h-4 text-muted-foreground/30" />
+                      </div>
+                    </TableCell>
+                    <TableCell className="font-medium">{p.name}</TableCell>
+                    <TableCell>
+                      <span className="text-muted-foreground line-through text-xs">
+                        {formatPrice(p.mrp)}
+                      </span>
+                      <br />
+                      <span className="text-gold text-sm">
+                        {formatPrice(effectivePrice(p))}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {p.sizes.join(", ") || "—"}
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        className={
+                          p.inStock
+                            ? "bg-green-900/30 text-green-400 border-green-800"
+                            : "bg-red-900/30 text-red-400 border-red-800"
+                        }
+                      >
+                        {p.inStock ? "In Stock" : "Out"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex gap-2 justify-end">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="w-7 h-7 text-muted-foreground hover:text-gold"
+                          onClick={() => openEdit(p)}
+                          data-ocid={`admin.product.edit_button.${idx + 1}`}
                         >
-                          {p.inStock ? "In Stock" : "Out"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex gap-2 justify-end">
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="w-7 h-7 text-muted-foreground hover:text-gold"
-                            onClick={() => openEdit(p)}
-                            data-ocid={`admin.product.edit_button.${idx + 1}`}
-                          >
-                            <Edit2 className="w-3 h-3" />
-                          </Button>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="w-7 h-7 text-muted-foreground hover:text-destructive"
-                            onClick={() => handleDelete(p.id)}
-                            data-ocid={`admin.product.delete_button.${idx + 1}`}
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })
+                          <Edit2 className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="w-7 h-7 text-muted-foreground hover:text-destructive"
+                          onClick={() => handleDelete(p.id)}
+                          data-ocid={`admin.product.delete_button.${idx + 1}`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
               )}
             </TableBody>
           </Table>
@@ -942,9 +967,34 @@ function OrdersTab() {
   const { data: orders, isLoading } = useAllOrders();
   const { data: users } = useAllUsers();
   const updateStatus = useUpdateOrderStatus();
+  const { actor } = useActor();
+  const [deliveryCodes, setDeliveryCodes] = useState<Record<string, string>>(
+    {},
+  );
+  const [generatingCode, setGeneratingCode] = useState<string | null>(null);
 
   const getUser = (userId: string) =>
     users?.find((u) => u.id.toString() === userId);
+
+  const handleGenerateCode = async (orderId: string) => {
+    setGeneratingCode(orderId);
+    try {
+      if (!actor) throw new Error("Not connected");
+      const token = getAdminToken();
+      if (typeof (actor as any).generateDeliveryCode !== "function") {
+        throw new Error(
+          "Delivery code feature not available. Please refresh the page and try again.",
+        );
+      }
+      const code = await (actor as any).generateDeliveryCode(token, orderId);
+      setDeliveryCodes((prev) => ({ ...prev, [orderId]: code }));
+      toast.success(`Delivery code: ${code}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to generate code");
+    } finally {
+      setGeneratingCode(null);
+    }
+  };
 
   return (
     <div>
@@ -971,10 +1021,10 @@ function OrdersTab() {
                   Payment
                 </TableHead>
                 <TableHead className="text-gold-muted uppercase text-xs tracking-widest">
-                  Location
+                  Status
                 </TableHead>
                 <TableHead className="text-gold-muted uppercase text-xs tracking-widest">
-                  Status
+                  Code
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -991,6 +1041,7 @@ function OrdersTab() {
               ) : (
                 orders.map((order, idx) => {
                   const user = getUser(order.userId.toString());
+                  const code = deliveryCodes[order.id];
                   return (
                     <TableRow
                       key={order.id}
@@ -1011,9 +1062,6 @@ function OrdersTab() {
                           {order.paymentMethod}
                         </Badge>
                       </TableCell>
-                      <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">
-                        {order.deliveryLocation || "—"}
-                      </TableCell>
                       <TableCell>
                         <Select
                           value={order.status}
@@ -1024,7 +1072,7 @@ function OrdersTab() {
                             })
                           }
                         >
-                          <SelectTrigger className="h-7 text-xs bg-secondary border-gold-border w-32">
+                          <SelectTrigger className="h-7 text-xs bg-secondary border-gold-border w-36">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent className="bg-card border-gold-border">
@@ -1035,6 +1083,25 @@ function OrdersTab() {
                             ))}
                           </SelectContent>
                         </Select>
+                      </TableCell>
+                      <TableCell>
+                        {code ? (
+                          <span className="font-mono text-gold text-sm tracking-widest border border-gold-border px-2 py-0.5">
+                            {code}
+                          </span>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs border-gold-border text-gold-muted hover:text-gold hover:border-gold px-2"
+                            onClick={() => handleGenerateCode(order.id)}
+                            disabled={generatingCode === order.id}
+                            data-ocid={`admin.order.generate_code.button.${idx + 1}`}
+                          >
+                            <Key className="w-3 h-3 mr-1" />
+                            {generatingCode === order.id ? "..." : "Code"}
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   );
@@ -1067,8 +1134,8 @@ function SchemesTab() {
       await createScheme.mutateAsync(form);
       setForm({ title: "", description: "", couponCode: "" });
       toast.success("Scheme added");
-    } catch {
-      toast.error("Failed to add scheme");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to add scheme");
     }
   };
 
@@ -1077,8 +1144,8 @@ function SchemesTab() {
     try {
       await deleteScheme.mutateAsync(id);
       toast.success("Scheme deleted");
-    } catch {
-      toast.error("Failed to delete scheme");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete scheme");
     }
   };
 
@@ -1187,37 +1254,279 @@ function SchemesTab() {
   );
 }
 
+function ReelsTab() {
+  const { data: reelsData, isLoading } = useReels();
+  const reels = reelsData as Reel[] | undefined;
+  const { data: products } = useProducts();
+  const createReel = useCreateReel();
+  const deleteReel = useDeleteReel();
+  const [title, setTitle] = useState("");
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string>("");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [isUploading, setIsUploading] = useState(false);
+  const [productId, setProductId] = useState("");
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    setVideoFile(file);
+    if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    setVideoPreviewUrl(file ? URL.createObjectURL(file) : "");
+  };
+
+  const handleCreate = async () => {
+    if (!title.trim() || !videoFile) {
+      toast.error("Title and video file are required");
+      return;
+    }
+    try {
+      setIsUploading(true);
+      setUploadProgress(0);
+      const { uploadVideoToStorage } = await import("../utils/videoUpload");
+      const buffer = await videoFile.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      const uploadedUrl = await uploadVideoToStorage(bytes, (pct) =>
+        setUploadProgress(pct),
+      );
+      await createReel.mutateAsync({
+        title: title.trim(),
+        videoUrl: uploadedUrl,
+        productId: productId && productId !== "none" ? BigInt(productId) : null,
+      });
+      setTitle("");
+      setVideoFile(null);
+      if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+      setVideoPreviewUrl("");
+      setProductId("");
+      setUploadProgress(0);
+      toast.success("Reel added");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to add reel");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleDelete = async (id: bigint) => {
+    if (!confirm("Delete this reel?")) return;
+    try {
+      await deleteReel.mutateAsync(id);
+      toast.success("Reel deleted");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete reel");
+    }
+  };
+
+  return (
+    <div>
+      <h2 className="font-serif text-2xl text-gold uppercase tracking-widest mb-6">
+        Reels
+      </h2>
+
+      {/* Add reel form */}
+      <div className="card-luxury p-6 mb-6 flex flex-col gap-4">
+        <h3 className="text-sm tracking-widest uppercase text-muted-foreground">
+          Add New Reel
+        </h3>
+        <div>
+          <Label className="text-xs tracking-widest uppercase text-muted-foreground">
+            Title *
+          </Label>
+          <Input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="e.g. Summer Collection Highlights"
+            className="mt-1 bg-secondary border-gold-border"
+            data-ocid="admin.reel.title.input"
+          />
+        </div>
+        <div>
+          <Label className="text-xs tracking-widest uppercase text-muted-foreground">
+            Video File *
+          </Label>
+          <div className="mt-1 flex items-center gap-3">
+            <label
+              htmlFor="reel-video-upload"
+              className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 rounded-md border border-gold-border bg-secondary text-sm hover:bg-secondary/80 transition-colors"
+              data-ocid="admin.reel.upload_button"
+            >
+              <Upload className="w-4 h-4 text-gold" />
+              Choose Video
+            </label>
+            <input
+              id="reel-video-upload"
+              type="file"
+              accept="video/*"
+              className="hidden"
+              onChange={handleFileChange}
+            />
+            {videoFile && (
+              <span className="text-xs text-muted-foreground truncate max-w-[200px]">
+                {videoFile.name}
+              </span>
+            )}
+          </div>
+          {videoPreviewUrl && (
+            <video
+              src={videoPreviewUrl}
+              controls
+              className="mt-3 rounded-md border border-gold-border"
+              style={{
+                maxHeight: "180px",
+                width: "100%",
+                objectFit: "contain",
+              }}
+            >
+              <track kind="captions" />
+            </video>
+          )}
+          {isUploading && (
+            <div
+              className="mt-2 text-xs text-gold"
+              data-ocid="admin.reel.upload.loading_state"
+            >
+              Uploading... {uploadProgress}%
+              <div className="mt-1 h-1 bg-secondary rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gold transition-all duration-300"
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+        <div>
+          <Label className="text-xs tracking-widest uppercase text-muted-foreground">
+            Link to Product (optional)
+          </Label>
+          <Select value={productId} onValueChange={setProductId}>
+            <SelectTrigger
+              className="mt-1 bg-secondary border-gold-border"
+              data-ocid="admin.reel.product.select"
+            >
+              <SelectValue placeholder="No product linked" />
+            </SelectTrigger>
+            <SelectContent className="bg-card border-gold-border">
+              <SelectItem value="none">No product linked</SelectItem>
+              {products?.map((p) => (
+                <SelectItem key={p.id.toString()} value={p.id.toString()}>
+                  {p.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <Button
+          className="btn-gold tracking-widest uppercase self-start"
+          onClick={handleCreate}
+          disabled={isUploading || createReel.isPending}
+          data-ocid="admin.reel.add.button"
+        >
+          <Plus className="w-4 h-4 mr-1" />
+          {isUploading ? "Uploading..." : "Add Reel"}
+        </Button>
+      </div>
+
+      {/* Reels list */}
+      {isLoading ? (
+        <Skeleton className="h-32 w-full" />
+      ) : !reels?.length ? (
+        <div
+          className="card-luxury p-8 text-center text-muted-foreground"
+          data-ocid="admin.reels.empty_state"
+        >
+          No reels yet
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {reels.map((reel, idx) => {
+            const linkedProduct =
+              reel.productId !== null && reel.productId !== undefined
+                ? products?.find((p) => p.id === reel.productId)
+                : null;
+            return (
+              <div
+                key={reel.id.toString()}
+                className="card-luxury p-4 flex items-center justify-between gap-4"
+                data-ocid={`admin.reel.item.${idx + 1}`}
+              >
+                <video
+                  src={reel.videoUrl}
+                  controls
+                  style={{
+                    maxHeight: "80px",
+                    width: "80px",
+                    objectFit: "cover",
+                  }}
+                  className="rounded flex-shrink-0 border border-gold-border"
+                >
+                  <track kind="captions" />
+                </video>
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-sm">{reel.title}</p>
+                  {linkedProduct && (
+                    <p className="text-xs text-gold mt-1">
+                      🛒 {linkedProduct.name}
+                    </p>
+                  )}
+                </div>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="w-7 h-7 text-muted-foreground hover:text-destructive flex-shrink-0"
+                  onClick={() => handleDelete(reel.id)}
+                  data-ocid={`admin.reel.delete.button.${idx + 1}`}
+                >
+                  <Trash2 className="w-3 h-3" />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsTab() {
   const { data: settings, isLoading } = usePaymentSettings();
   const setSettings = useSetPaymentSettings();
   const [upiId, setUpiId] = useState("");
   const [qrImage, setQrImage] = useState<Uint8Array | null>(null);
   const [qrImageType, setQrImageType] = useState("");
+  const [newQrPreviewUrl, setNewQrPreviewUrl] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const initializedRef = useRef(false);
+  if (!initializedRef.current && settings?.upiId && !upiId) {
+    initializedRef.current = true;
+    setUpiId(settings.upiId);
+  }
 
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const result = await fileToUint8Array(file);
-    setQrImage(result.bytes);
-    setQrImageType(result.type);
+    try {
+      const result = await fileToUint8Array(file);
+      setQrImage(result.bytes);
+      setQrImageType(result.type || "image/jpeg");
+      const objectUrl = URL.createObjectURL(file);
+      setNewQrPreviewUrl(objectUrl);
+    } catch {
+      toast.error("Could not load image. Please try a JPG or PNG file.");
+    }
   };
 
   const handleSave = async () => {
-    const id = upiId.trim() || settings?.upiId || "";
-    if (!id) {
-      toast.error("Please enter UPI ID");
-      return;
-    }
     try {
       await setSettings.mutateAsync({
-        upiId: id,
+        upiId: upiId.trim(),
         qrImage: qrImage ?? settings?.qrImage ?? new Uint8Array(),
         qrImageType: qrImageType || settings?.qrImageType || "",
       });
       toast.success("Payment settings saved");
-    } catch {
-      toast.error("Failed to save settings");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to save settings");
     }
   };
 
@@ -1239,7 +1548,7 @@ function SettingsTab() {
               UPI ID
             </Label>
             <Input
-              value={upiId || settings?.upiId || ""}
+              value={upiId}
               onChange={(e) => setUpiId(e.target.value)}
               placeholder="yourname@upi"
               className="mt-2 bg-secondary border-gold-border"
@@ -1250,7 +1559,7 @@ function SettingsTab() {
             <Label className="text-xs tracking-widest uppercase text-muted-foreground">
               GPay QR Code
             </Label>
-            {existingQr && (
+            {existingQr && !newQrPreviewUrl && (
               <div className="mt-2 mb-3">
                 <img
                   src={existingQr}
@@ -1262,6 +1571,18 @@ function SettingsTab() {
                 </p>
               </div>
             )}
+            {newQrPreviewUrl && (
+              <div className="mt-2 mb-3">
+                <img
+                  src={newQrPreviewUrl}
+                  alt="New QR preview"
+                  className="w-32 h-32 object-contain border border-gold-border p-1"
+                />
+                <p className="text-xs text-amber-400 mt-1">
+                  New QR Selected (not saved yet)
+                </p>
+              </div>
+            )}
             <input
               ref={fileRef}
               type="file"
@@ -1270,13 +1591,14 @@ function SettingsTab() {
               onChange={handleImageChange}
             />
             <Button
+              type="button"
               variant="outline"
               className="w-full border-gold-border text-muted-foreground hover:text-gold"
               onClick={() => fileRef.current?.click()}
               data-ocid="admin.settings.qr.upload_button"
             >
               <Upload className="w-4 h-4 mr-2" />
-              {qrImage ? "New QR Selected" : "Upload QR Image"}
+              {qrImage ? "Change QR Image" : "Upload QR Image"}
             </Button>
           </div>
           <Button
@@ -1289,6 +1611,76 @@ function SettingsTab() {
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+function AppearanceTab() {
+  const [activeTheme, setActiveTheme] = useState<ThemeId>(
+    () => (localStorage.getItem("meet-theme") as ThemeId) || "bone-white",
+  );
+
+  const handleApply = (themeId: ThemeId) => {
+    applyTheme(themeId);
+    setActiveTheme(themeId);
+    toast.success(
+      `Theme "${THEMES.find((t) => t.id === themeId)?.name}" applied`,
+    );
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl tracking-widest uppercase text-gold mb-1">
+          Site Appearance
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Choose a colour theme for your storefront
+        </p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {THEMES.map((theme) => {
+          const isActive = activeTheme === theme.id;
+          return (
+            <button
+              key={theme.id}
+              type="button"
+              onClick={() => handleApply(theme.id)}
+              data-ocid={`admin.appearance.${theme.id}.button`}
+              className={`text-left rounded-lg border-2 p-5 transition-all ${
+                isActive
+                  ? "border-gold bg-secondary"
+                  : "border-border hover:border-muted-foreground"
+              }`}
+            >
+              <div className="flex items-center gap-3 mb-3">
+                <span
+                  className="w-7 h-7 rounded-full border border-border"
+                  style={{ background: theme.previewBg }}
+                />
+                <span
+                  className="w-7 h-7 rounded-full border border-border"
+                  style={{ background: theme.previewPrimary }}
+                />
+                <span
+                  className="w-7 h-7 rounded-full border border-border"
+                  style={{ background: theme.previewAccent }}
+                />
+                {isActive && <Check className="w-4 h-4 text-gold ml-auto" />}
+              </div>
+              <p className="font-semibold text-sm tracking-wide">
+                {theme.name}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {theme.description}
+              </p>
+              <p className="text-xs mt-2 text-gold font-medium">
+                {isActive ? "Active" : "Click to apply"}
+              </p>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

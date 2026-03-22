@@ -4,13 +4,14 @@ import Time "mo:core/Time";
 import Nat "mo:core/Nat";
 import Text "mo:core/Text";
 import Order "mo:core/Order";
-import Array "mo:core/Array";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
 import MixinStorage "blob-storage/Mixin";
 import AccessControl "authorization/access-control";
 import MixinAuthorization "authorization/MixinAuthorization";
 import Blob "mo:core/Blob";
+import Float "mo:core/Float";
+import Int "mo:core/Int";
 
 
 
@@ -18,6 +19,12 @@ actor {
   let accessControlState = AccessControl.initState();
   include MixinAuthorization(accessControlState);
   include MixinStorage();
+
+  let ADMIN_CODE : Text = "2537";
+
+  func isValidAdmin(token : Text) : Bool {
+    token == ADMIN_CODE
+  };
 
   public type UserProfile = {
     id : Principal;
@@ -41,6 +48,18 @@ actor {
     colours : [Text];
     image : Blob;
     imageType : Text;
+    inStock : Bool;
+  };
+
+  public type ProductSummary = {
+    id : Nat;
+    name : Text;
+    description : Text;
+    mrp : Nat;
+    discountAmount : Nat;
+    categoryId : Nat;
+    sizes : [Text];
+    colours : [Text];
     inStock : Bool;
   };
 
@@ -84,6 +103,26 @@ actor {
     qrImageType : Text;
   };
 
+  public type Reel = {
+    id : Nat;
+    title : Text;
+    videoUrl : Text;
+    productId : ?Nat;
+    createdAt : Int;
+  };
+
+  public type ProductRating = {
+    productId : Nat;
+    userId : Principal;
+    rating : Nat;
+    createdAt : Int;
+  };
+
+  public type RatingSummary = {
+    average : Float;
+    count : Nat;
+  };
+
   func compareOrderByCreatedAt(o1 : Order, o2 : Order) : Order.Order {
     if (o1.createdAt > o2.createdAt) { #less } else if (o1.createdAt < o2.createdAt) {
       #greater;
@@ -108,179 +147,236 @@ actor {
     };
   };
 
-  let userProfiles = Map.empty<Principal, UserProfile>();
-  let categories = Map.empty<Nat, Category>();
-  let products = Map.empty<Nat, Product>();
-  let orders = Map.empty<Text, Order>();
-  let vouchers = Map.empty<Nat, Voucher>();
-  let schemes = Map.empty<Nat, Scheme>();
+  func compareReelByCreatedAt(r1 : Reel, r2 : Reel) : Order.Order {
+    if (r1.createdAt > r2.createdAt) { #less } else if (r1.createdAt < r2.createdAt) {
+      #greater;
+    } else {
+      Nat.compare(r1.id, r2.id);
+    };
+  };
 
-  var nextCategoryId = 1;
-  var nextProductId = 1;
-  var nextVoucherId = 1;
-  var nextSchemeId = 1;
-  var paymentSettings : ?PaymentSettings = null;
+  // ── Stable backing storage ───────────────────────────────────────────
+  stable var _stableUserProfiles   : [(Principal, UserProfile)]  = [];
+  stable var _stableCategories     : [(Nat, Category)]           = [];
+  stable var _stableProducts       : [(Nat, Product)]            = [];
+  stable var _stableOrders         : [(Text, Order)]             = [];
+  stable var _stableVouchers       : [(Nat, Voucher)]            = [];
+  stable var _stableSchemes        : [(Nat, Scheme)]             = [];
+  stable var _stableReels          : [(Nat, Reel)]               = [];
+  stable var _stableWishlists      : [(Principal, [Nat])]        = [];
+  stable var _stableDeliveryCodes  : [(Text, Text)]              = [];
+  stable var _stableRatings        : [(Text, ProductRating)]     = [];
 
-  public query ({ caller }) func getCategories() : async [Category] {
+  var nextCategoryId  : Nat = 1;
+  var nextProductId   : Nat = 1;
+  var nextVoucherId   : Nat = 1;
+  var nextSchemeId    : Nat = 1;
+  var nextReelId      : Nat = 1;
+  stable var _nextCategoryId  : Nat = 1;
+  stable var _nextProductId   : Nat = 1;
+  stable var _nextVoucherId   : Nat = 1;
+  stable var _nextSchemeId    : Nat = 1;
+  stable var _nextReelId      : Nat = 1;
+  stable var paymentSettings  : ?PaymentSettings = null;
+  stable var currentTheme     : Text = "bone-white";
+
+  // ── In-memory Maps ────────────────────────────────────────────────────
+  let userProfiles   = Map.empty<Principal, UserProfile>();
+  let categories     = Map.empty<Nat, Category>();
+  let products       = Map.empty<Nat, Product>();
+  let orders         = Map.empty<Text, Order>();
+  let vouchers       = Map.empty<Nat, Voucher>();
+  let schemes        = Map.empty<Nat, Scheme>();
+  let reels          = Map.empty<Nat, Reel>();
+  let wishlists      = Map.empty<Principal, [Nat]>();
+  let deliveryCodes  = Map.empty<Text, Text>();
+  let ratings        = Map.empty<Text, ProductRating>();
+
+  do {
+    for ((k, v) in _stableUserProfiles.vals())  { userProfiles.add(k, v) };
+    for ((k, v) in _stableCategories.vals())    { categories.add(k, v) };
+    for ((k, v) in _stableProducts.vals())      { products.add(k, v) };
+    for ((k, v) in _stableOrders.vals())        { orders.add(k, v) };
+    for ((k, v) in _stableVouchers.vals())      { vouchers.add(k, v) };
+    for ((k, v) in _stableSchemes.vals())       { schemes.add(k, v) };
+    for ((k, v) in _stableReels.vals())         { reels.add(k, v) };
+    for ((k, v) in _stableWishlists.vals())     { wishlists.add(k, v) };
+    for ((k, v) in _stableDeliveryCodes.vals()) { deliveryCodes.add(k, v) };
+    for ((k, v) in _stableRatings.vals())       { ratings.add(k, v) };
+    nextCategoryId := _nextCategoryId;
+    nextProductId  := _nextProductId;
+    nextVoucherId  := _nextVoucherId;
+    nextSchemeId   := _nextSchemeId;
+    nextReelId     := _nextReelId;
+    _stableUserProfiles  := [];
+    _stableCategories    := [];
+    _stableProducts      := [];
+    _stableOrders        := [];
+    _stableVouchers      := [];
+    _stableSchemes       := [];
+    _stableReels         := [];
+    _stableWishlists     := [];
+    _stableDeliveryCodes := [];
+    _stableRatings       := [];
+  };
+
+  system func preupgrade() {
+    let up = List.empty<(Principal, UserProfile)>();
+    userProfiles.forEach(func(k, v) { up.add((k, v)) });
+    _stableUserProfiles := up.toArray();
+
+    let cp = List.empty<(Nat, Category)>();
+    categories.forEach(func(k, v) { cp.add((k, v)) });
+    _stableCategories := cp.toArray();
+
+    let pp = List.empty<(Nat, Product)>();
+    products.forEach(func(k, v) { pp.add((k, v)) });
+    _stableProducts := pp.toArray();
+
+    let op = List.empty<(Text, Order)>();
+    orders.forEach(func(k, v) { op.add((k, v)) });
+    _stableOrders := op.toArray();
+
+    let vp = List.empty<(Nat, Voucher)>();
+    vouchers.forEach(func(k, v) { vp.add((k, v)) });
+    _stableVouchers := vp.toArray();
+
+    let sp = List.empty<(Nat, Scheme)>();
+    schemes.forEach(func(k, v) { sp.add((k, v)) });
+    _stableSchemes := sp.toArray();
+
+    let rp = List.empty<(Nat, Reel)>();
+    reels.forEach(func(k, v) { rp.add((k, v)) });
+    _stableReels := rp.toArray();
+
+    let wp = List.empty<(Principal, [Nat])>();
+    wishlists.forEach(func(k, v) { wp.add((k, v)) });
+    _stableWishlists := wp.toArray();
+
+    let dp = List.empty<(Text, Text)>();
+    deliveryCodes.forEach(func(k, v) { dp.add((k, v)) });
+    _stableDeliveryCodes := dp.toArray();
+
+    let ratp = List.empty<(Text, ProductRating)>();
+    ratings.forEach(func(k, v) { ratp.add((k, v)) });
+    _stableRatings := ratp.toArray();
+
+    _nextCategoryId := nextCategoryId;
+    _nextProductId  := nextProductId;
+    _nextVoucherId  := nextVoucherId;
+    _nextSchemeId   := nextSchemeId;
+    _nextReelId     := nextReelId;
+  };
+
+  system func postupgrade() {
+    for ((k, v) in _stableUserProfiles.vals())  { userProfiles.add(k, v) };
+    for ((k, v) in _stableCategories.vals())    { categories.add(k, v) };
+    for ((k, v) in _stableProducts.vals())      { products.add(k, v) };
+    for ((k, v) in _stableOrders.vals())        { orders.add(k, v) };
+    for ((k, v) in _stableVouchers.vals())      { vouchers.add(k, v) };
+    for ((k, v) in _stableSchemes.vals())       { schemes.add(k, v) };
+    for ((k, v) in _stableReels.vals())         { reels.add(k, v) };
+    for ((k, v) in _stableWishlists.vals())     { wishlists.add(k, v) };
+    for ((k, v) in _stableDeliveryCodes.vals()) { deliveryCodes.add(k, v) };
+    for ((k, v) in _stableRatings.vals())       { ratings.add(k, v) };
+    nextCategoryId := _nextCategoryId;
+    nextProductId  := _nextProductId;
+    nextVoucherId  := _nextVoucherId;
+    nextSchemeId   := _nextSchemeId;
+    nextReelId     := _nextReelId;
+    _stableUserProfiles  := [];
+    _stableCategories    := [];
+    _stableProducts      := [];
+    _stableOrders        := [];
+    _stableVouchers      := [];
+    _stableSchemes       := [];
+    _stableReels         := [];
+    _stableWishlists     := [];
+    _stableDeliveryCodes := [];
+    _stableRatings       := [];
+  };
+
+  // ── Public read endpoints ─────────────────────────────────────────────
+
+  public query func getCategories() : async [Category] {
     categories.values().toArray();
   };
 
-  public query ({ caller }) func getProducts() : async [Product] {
-    products.values().toArray();
+  public query func getProducts() : async [ProductSummary] {
+    let summaries = List.empty<ProductSummary>();
+    products.forEach(func(_k, p : Product) {
+      summaries.add({
+        id = p.id;
+        name = p.name;
+        description = p.description;
+        mrp = p.mrp;
+        discountAmount = p.discountAmount;
+        categoryId = p.categoryId;
+        sizes = p.sizes;
+        colours = p.colours;
+        inStock = p.inStock;
+      });
+    });
+    summaries.toArray();
   };
 
-  public query ({ caller }) func getCallerUserProfile() : async ?UserProfile {
-    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
-      Runtime.trap("Unauthorized: Only users can view profiles");
-    };
-    userProfiles.get(caller);
-  };
-
-  public query ({ caller }) func getUserProfile(user : Principal) : async ?UserProfile {
-    if (caller != user and not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Can only view your own profile");
-    };
-    userProfiles.get(user);
-  };
-
-  public shared ({ caller }) func saveCallerUserProfile(name : Text, whatsapp : Text) : async () {
-    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
-      Runtime.trap("Unauthorized: Only users can save profiles");
-    };
-    let userProfile : UserProfile = {
-      id = caller;
-      name;
-      whatsapp;
-    };
-    userProfiles.add(caller, userProfile);
-  };
-
-  public shared ({ caller }) func createCategory(name : Text) : async Category {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can create a category");
-    };
-    let category : Category = { id = nextCategoryId; name };
-    categories.add(nextCategoryId, category);
-    nextCategoryId += 1;
-    category;
-  };
-
-  public shared ({ caller }) func updateCategory(id : Nat, name : Text) : async Category {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can update a category");
-    };
-    switch (categories.get(id)) {
-      case (null) { Runtime.trap("Category not found") };
-      case (?_) {
-        let category : Category = { id; name };
-        categories.add(id, category);
-        category;
-      };
-    };
-  };
-
-  public shared ({ caller }) func deleteCategory(id : Nat) : async () {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can delete category");
-    };
-    if (not categories.containsKey(id)) {
-      Runtime.trap("Category not found");
-    };
-    categories.remove(id);
-  };
-
-  public shared ({ caller }) func createProduct(productInfo : {
-    name : Text;
-    description : Text;
-    mrp : Nat;
-    discountAmount : Nat;
-    categoryId : Nat;
-    sizes : [Text];
-    colours : [Text];
-    image : Blob;
-    imageType : Text;
-    inStock : Bool;
-  }) : async Product {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can create products");
-    };
-    let product : Product = {
-      id = nextProductId;
-      name = productInfo.name;
-      description = productInfo.description;
-      mrp = productInfo.mrp;
-      discountAmount = productInfo.discountAmount;
-      categoryId = productInfo.categoryId;
-      sizes = productInfo.sizes;
-      colours = productInfo.colours;
-      image = productInfo.image;
-      imageType = productInfo.imageType;
-      inStock = productInfo.inStock;
-    };
-    products.add(nextProductId, product);
-    nextProductId += 1;
-    product;
-  };
-
-  public shared ({ caller }) func updateProduct(id : Nat, productInfo : {
-    name : Text;
-    description : Text;
-    mrp : Nat;
-    discountAmount : Nat;
-    categoryId : Nat;
-    sizes : [Text];
-    colours : [Text];
-    image : Blob;
-    imageType : Text;
-    inStock : Bool;
-  }) : async Product {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can update products");
-    };
-    switch (products.get(id)) {
-      case (null) { Runtime.trap("Product not found") };
-      case (?_) {
-        let product : Product = {
-          id;
-          name = productInfo.name;
-          description = productInfo.description;
-          mrp = productInfo.mrp;
-          discountAmount = productInfo.discountAmount;
-          categoryId = productInfo.categoryId;
-          sizes = productInfo.sizes;
-          colours = productInfo.colours;
-          image = productInfo.image;
-          imageType = productInfo.imageType;
-          inStock = productInfo.inStock;
-        };
-        products.add(id, product);
-        product;
-      };
-    };
-  };
-
-  public shared ({ caller }) func deleteProduct(id : Nat) : async () {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can delete product");
-    };
-    if (not products.containsKey(id)) {
-      Runtime.trap("Product not found");
-    };
-    products.remove(id);
-  };
-
-  public query ({ caller }) func getProductById(id : Nat) : async Product {
+  public query func getProductById(id : Nat) : async Product {
     switch (products.get(id)) {
       case (null) { Runtime.trap("Product not found") };
       case (?product) { product };
     };
   };
 
-  public shared ({ caller }) func createOrder(items : [OrderItem], paymentMethod : Text, deliveryLocation : Text) : async Order {
-    if (not (AccessControl.hasPermission(accessControlState, caller, #user))) {
-      Runtime.trap("Unauthorized: Only users can create orders");
-    };
+  public query func getSchemes() : async [Scheme] {
+    schemes.values().toArray().sort(compareSchemeByCreatedAt);
+  };
 
+  public query func getPaymentSettings() : async ?PaymentSettings {
+    paymentSettings;
+  };
+
+  public query func getTheme() : async Text {
+    currentTheme;
+  };
+
+  public query func getReels() : async [Reel] {
+    reels.values().toArray().sort(compareReelByCreatedAt);
+  };
+
+  public query func getProductRating(productId : Nat) : async RatingSummary {
+    var total : Nat = 0;
+    var count : Nat = 0;
+    ratings.forEach(func(_k, r : ProductRating) {
+      if (r.productId == productId) {
+        total += r.rating;
+        count += 1;
+      };
+    });
+    if (count == 0) {
+      { average = 0.0; count = 0 };
+    } else {
+      { average = total.toFloat() / count.toFloat(); count };
+    };
+  };
+
+  // ── User profile ────────────────────────────────────────────
+
+  public query ({ caller }) func getCallerUserProfile() : async ?UserProfile {
+    userProfiles.get(caller);
+  };
+
+  public query ({ caller }) func getUserProfile(user : Principal) : async ?UserProfile {
+    userProfiles.get(user);
+  };
+
+  public shared ({ caller }) func saveCallerUserProfile(name : Text, whatsapp : Text) : async () {
+    let userProfile : UserProfile = { id = caller; name; whatsapp };
+    userProfiles.add(caller, userProfile);
+  };
+
+  // ── Orders ─────────────────────────────────────────────────
+
+  public shared ({ caller }) func createOrder(items : [OrderItem], paymentMethod : Text, deliveryLocation : Text) : async Order {
     let totalAmount = items.foldLeft(0, func(acc, item) { acc + (item.price * item.quantity) });
     let orderId = "order-" # Time.now().toText();
 
@@ -290,7 +386,7 @@ actor {
       items;
       totalAmount;
       paymentMethod;
-      status = "pending";
+      status = "Placed";
       createdAt = Time.now();
       deliveryLocation;
     };
@@ -313,10 +409,226 @@ actor {
     order;
   };
 
-  public shared ({ caller }) func updateOrderStatus(orderId : Text, status : Text) : async () {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can update order status");
+  public query ({ caller = _ }) func getUserOrders(userId : Principal) : async [Order] {
+    let userOrders = List.empty<Order>();
+    orders.forEach(func(_id, order) {
+      if (order.userId == userId) { userOrders.add(order) };
+    });
+    userOrders.toArray().sort(compareOrderByCreatedAt);
+  };
+
+  public query ({ caller = _ }) func getUserVouchers(userId : Principal) : async [Voucher] {
+    let userVouchers = List.empty<Voucher>();
+    vouchers.forEach(func(_id, voucher) {
+      if (voucher.userId == userId) { userVouchers.add(voucher) };
+    });
+    userVouchers.toArray().sort(compareVoucherByCreatedAt);
+  };
+
+  public query ({ caller = _ }) func getOrderById(orderId : Text) : async ?Order {
+    orders.get(orderId);
+  };
+
+  // ── Wishlist ────────────────────────────────────────────────
+
+  public shared ({ caller }) func addToWishlist(productId : Nat) : async () {
+    let current = switch (wishlists.get(caller)) { case (?list) list; case null [] };
+    let alreadyIn = current.find(func(id : Nat) : Bool { id == productId });
+    switch (alreadyIn) {
+      case (?_) {};
+      case null {
+        let newList = List.empty<Nat>();
+        for (id in current.vals()) { newList.add(id) };
+        newList.add(productId);
+        wishlists.add(caller, newList.toArray());
+      };
     };
+  };
+
+  public shared ({ caller }) func removeFromWishlist(productId : Nat) : async () {
+    let current = switch (wishlists.get(caller)) { case (?list) list; case null [] };
+    let filtered = current.filter(func(id : Nat) : Bool { id != productId });
+    wishlists.add(caller, filtered);
+  };
+
+  public query func getUserWishlist(userId : Principal) : async [Nat] {
+    switch (wishlists.get(userId)) { case (?list) list; case null [] };
+  };
+
+  // ── Ratings ─────────────────────────────────────────────────
+
+  public shared ({ caller }) func rateProduct(productId : Nat, rating : Nat) : async () {
+    if (rating < 1 or rating > 5) { Runtime.trap("Rating must be 1-5") };
+    let key = productId.toText() # "-" # caller.toText();
+    let r : ProductRating = { productId; userId = caller; rating; createdAt = Time.now() };
+    ratings.add(key, r);
+  };
+
+  public query ({ caller }) func getUserProductRating(productId : Nat) : async ?Nat {
+    let key = productId.toText() # "-" # caller.toText();
+    switch (ratings.get(key)) { case (?r) ?r.rating; case null null };
+  };
+
+  // ── Delivery codes ──────────────────────────────────────────
+
+  public shared func generateDeliveryCode(adminToken : Text, orderId : Text) : async Text {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    let seed = Time.now();
+    let code = ((Int.abs(seed) % 9000) + 1000).toText();
+    deliveryCodes.add(orderId, code);
+    code;
+  };
+
+  public shared func getDeliveryCode(adminToken : Text, orderId : Text) : async ?Text {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    deliveryCodes.get(orderId);
+  };
+
+  public shared func verifyDeliveryCode(orderId : Text, code : Text) : async Bool {
+    switch (deliveryCodes.get(orderId)) {
+      case (null) { false };
+      case (?stored) {
+        if (stored == code) {
+          switch (orders.get(orderId)) {
+            case (?order) {
+              let updated : Order = { order with status = "Delivered" };
+              orders.add(orderId, updated);
+            };
+            case null {};
+          };
+          true;
+        } else { false };
+      };
+    };
+  };
+
+  // ── Reels ────────────────────────────────────────────────────
+
+  public shared func createReel(adminToken : Text, title : Text, videoUrl : Text, productId : ?Nat) : async Reel {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    let reel : Reel = { id = nextReelId; title; videoUrl; productId; createdAt = Time.now() };
+    reels.add(nextReelId, reel);
+    nextReelId += 1;
+    reel;
+  };
+
+  public shared func deleteReel(adminToken : Text, id : Nat) : async () {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    if (not reels.containsKey(id)) { Runtime.trap("Reel not found") };
+    reels.remove(id);
+  };
+
+  // ── Theme ────────────────────────────────────────────────────
+
+  public shared func setTheme(adminToken : Text, themeId : Text) : async () {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    currentTheme := themeId;
+  };
+
+  // ── Admin endpoints ──────────────────────────────────────────
+
+  public shared func createCategory(adminToken : Text, name : Text) : async Category {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    let category : Category = { id = nextCategoryId; name };
+    categories.add(nextCategoryId, category);
+    nextCategoryId += 1;
+    category;
+  };
+
+  public shared func updateCategory(adminToken : Text, id : Nat, name : Text) : async Category {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    switch (categories.get(id)) {
+      case (null) { Runtime.trap("Category not found") };
+      case (?_) {
+        let category : Category = { id; name };
+        categories.add(id, category);
+        category;
+      };
+    };
+  };
+
+  public shared func deleteCategory(adminToken : Text, id : Nat) : async () {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    if (not categories.containsKey(id)) { Runtime.trap("Category not found") };
+    categories.remove(id);
+  };
+
+  public shared func createProduct(adminToken : Text, productInfo : {
+    name : Text;
+    description : Text;
+    mrp : Nat;
+    discountAmount : Nat;
+    categoryId : Nat;
+    sizes : [Text];
+    colours : [Text];
+    image : Blob;
+    imageType : Text;
+    inStock : Bool;
+  }) : async ProductSummary {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    let product : Product = {
+      id = nextProductId;
+      name = productInfo.name;
+      description = productInfo.description;
+      mrp = productInfo.mrp;
+      discountAmount = productInfo.discountAmount;
+      categoryId = productInfo.categoryId;
+      sizes = productInfo.sizes;
+      colours = productInfo.colours;
+      image = productInfo.image;
+      imageType = productInfo.imageType;
+      inStock = productInfo.inStock;
+    };
+    products.add(nextProductId, product);
+    nextProductId += 1;
+    { id = product.id; name = product.name; description = product.description; mrp = product.mrp; discountAmount = product.discountAmount; categoryId = product.categoryId; sizes = product.sizes; colours = product.colours; inStock = product.inStock };
+  };
+
+  public shared func updateProduct(adminToken : Text, id : Nat, productInfo : {
+    name : Text;
+    description : Text;
+    mrp : Nat;
+    discountAmount : Nat;
+    categoryId : Nat;
+    sizes : [Text];
+    colours : [Text];
+    image : Blob;
+    imageType : Text;
+    inStock : Bool;
+  }) : async ProductSummary {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    switch (products.get(id)) {
+      case (null) { Runtime.trap("Product not found") };
+      case (?existing) {
+        let newImage = if (productInfo.image.size() == 0) { existing.image } else { productInfo.image };
+        let newImageType = if (productInfo.imageType == "") { existing.imageType } else { productInfo.imageType };
+        let product : Product = {
+          id;
+          name = productInfo.name;
+          description = productInfo.description;
+          mrp = productInfo.mrp;
+          discountAmount = productInfo.discountAmount;
+          categoryId = productInfo.categoryId;
+          sizes = productInfo.sizes;
+          colours = productInfo.colours;
+          image = newImage;
+          imageType = newImageType;
+          inStock = productInfo.inStock;
+        };
+        products.add(id, product);
+        { id = product.id; name = product.name; description = product.description; mrp = product.mrp; discountAmount = product.discountAmount; categoryId = product.categoryId; sizes = product.sizes; colours = product.colours; inStock = product.inStock };
+      };
+    };
+  };
+
+  public shared func deleteProduct(adminToken : Text, id : Nat) : async () {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    if (not products.containsKey(id)) { Runtime.trap("Product not found") };
+    products.remove(id);
+  };
+
+  public shared func updateOrderStatus(adminToken : Text, orderId : Text, status : Text) : async () {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
     switch (orders.get(orderId)) {
       case (null) { Runtime.trap("Order not found") };
       case (?order) {
@@ -326,107 +638,37 @@ actor {
     };
   };
 
-  public shared ({ caller }) func setPaymentSettings(upiId : Text, qrImage : Blob, qrImageType : Text) : async () {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can set payment settings");
-    };
+  public shared func setPaymentSettings(adminToken : Text, upiId : Text, qrImage : Blob, qrImageType : Text) : async () {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
     paymentSettings := ?{ upiId; qrImage; qrImageType };
   };
 
-  public query ({ caller }) func getOrderById(orderId : Text) : async ?Order {
-    switch (orders.get(orderId)) {
-      case (null) { null };
-      case (?order) {
-        if (order.userId != caller and not AccessControl.isAdmin(accessControlState, caller)) {
-          Runtime.trap("Unauthorized: Can only view your own orders");
-        };
-        ?order;
-      };
-    };
-  };
-
-  public query ({ caller }) func getUserOrders(userId : Principal) : async [Order] {
-    if (caller != userId and not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Can only view your own orders");
-    };
-    let userOrders = List.empty<Order>();
-    orders.forEach(
-      func(_id, order) {
-        if (order.userId == userId) {
-          userOrders.add(order);
-        };
-      }
-    );
-    userOrders.toArray().sort(compareOrderByCreatedAt);
-  };
-
-  public query ({ caller }) func getUserVouchers(userId : Principal) : async [Voucher] {
-    if (caller != userId and not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Can only view your own vouchers");
-    };
-    let userVouchers = List.empty<Voucher>();
-    vouchers.forEach(
-      func(_id, voucher) {
-        if (voucher.userId == userId) {
-          userVouchers.add(voucher);
-        };
-      }
-    );
-    userVouchers.toArray().sort(compareVoucherByCreatedAt);
-  };
-
-  public query ({ caller }) func getPaymentSettings() : async ?PaymentSettings {
-    paymentSettings;
-  };
-
-  public query ({ caller }) func getAllUsers() : async [UserProfile] {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can view all users");
-    };
+  public shared func getAllUsers(adminToken : Text) : async [UserProfile] {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
     userProfiles.values().toArray();
   };
 
-  public query ({ caller }) func getAllOrders() : async [Order] {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can view all orders");
-    };
+  public shared func getAllOrders(adminToken : Text) : async [Order] {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
     orders.values().toArray().sort(compareOrderByCreatedAt);
   };
 
-  public query ({ caller }) func getAllVouchers() : async [Voucher] {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can view all vouchers");
-    };
+  public shared func getAllVouchers(adminToken : Text) : async [Voucher] {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
     vouchers.values().toArray().sort(compareVoucherByCreatedAt);
   };
 
-  public query ({ caller }) func getSchemes() : async [Scheme] {
-    schemes.values().toArray().sort(compareSchemeByCreatedAt);
-  };
-
-  public shared ({ caller }) func createScheme(title : Text, description : Text, couponCode : Text) : async Scheme {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can create schemes");
-    };
-    let scheme : Scheme = {
-      id = nextSchemeId;
-      title;
-      description;
-      couponCode;
-      createdAt = Time.now();
-    };
+  public shared func createScheme(adminToken : Text, title : Text, description : Text, couponCode : Text) : async Scheme {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    let scheme : Scheme = { id = nextSchemeId; title; description; couponCode; createdAt = Time.now() };
     schemes.add(nextSchemeId, scheme);
     nextSchemeId += 1;
     scheme;
   };
 
-  public shared ({ caller }) func deleteScheme(id : Nat) : async () {
-    if (not AccessControl.isAdmin(accessControlState, caller)) {
-      Runtime.trap("Unauthorized: Only admins can delete schemes");
-    };
-    if (not schemes.containsKey(id)) {
-      Runtime.trap("Scheme not found");
-    };
+  public shared func deleteScheme(adminToken : Text, id : Nat) : async () {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    if (not schemes.containsKey(id)) { Runtime.trap("Scheme not found") };
     schemes.remove(id);
   };
 };
