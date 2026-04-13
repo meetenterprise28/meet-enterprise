@@ -3,11 +3,11 @@ import { Button } from "@/components/ui/button";
 import { useNavigate } from "@tanstack/react-router";
 import { Heart, ShoppingCart, Star, Tag } from "lucide-react";
 import { motion } from "motion/react";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { Category, ProductSummary } from "../backend.d";
 import { useCart } from "../context/CartContext";
-import { useProductById, useProductRating } from "../hooks/useQueries";
+import { useProductImages, useProductRating } from "../hooks/useQueries";
 import { formatPrice, uint8ToDataUrl } from "../utils/imageUtils";
 import { ProductOptionsModal } from "./ProductOptionsModal";
 
@@ -65,23 +65,215 @@ export function ProductCard({
   const [wishlisted, setWishlisted] = useState(() =>
     getWishlist().includes(product.id.toString()),
   );
-  const { data: fullProduct } = useProductById(product.id);
+  const [imgIndex, setImgIndex] = useState(0);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  // 3D animation refs — no state to avoid re-renders per frame
+  const rafRef = useRef<number>(0);
+  const autoRotTimeRef = useRef(0);
+  const isInteractingRef = useRef(false);
+  const resumeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rxRef = useRef(0);
+  const ryRef = useRef(0);
+  // Touch tracking
+  const touchStartXRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+  // Current applied transform (to avoid jitter when resuming auto-rotate)
+  const currentRxRef = useRef(0);
+  const currentRyRef = useRef(0);
+
+  const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+  const maxTilt = isMobile ? 8 : 12;
+
+  const applyTransform = useCallback(
+    (rx: number, ry: number, animated: boolean) => {
+      const card = cardRef.current;
+      if (!card) return;
+      currentRxRef.current = rx;
+      currentRyRef.current = ry;
+      card.style.transition = animated ? "transform 0.15s ease" : "none";
+      card.style.transform = `perspective(800px) rotateX(${rx}deg) rotateY(${ry}deg) translateZ(4px)`;
+    },
+    [],
+  );
+
+  // Auto-rotation loop using sin/cos oscillation
+  const startAutoRotate = useCallback(() => {
+    if (rafRef.current) return; // already running
+    const loop = (ts: number) => {
+      if (isInteractingRef.current) {
+        rafRef.current = 0;
+        return;
+      }
+      // Gentle oscillation: ~0.5 rpm ≈ 0.0524 rad/s; ±8deg on X, ±10deg on Y
+      const t = ts * 0.0006; // slow time base
+      const targetRx = Math.sin(t * 0.7) * 5;
+      const targetRy = Math.sin(t) * 8;
+      // Smooth interpolate from current position
+      rxRef.current += (targetRx - rxRef.current) * 0.05;
+      ryRef.current += (targetRy - ryRef.current) * 0.05;
+      applyTransform(rxRef.current, ryRef.current, false);
+      autoRotTimeRef.current = ts;
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    rafRef.current = requestAnimationFrame(loop);
+  }, [applyTransform]);
+
+  const stopAutoRotate = useCallback(() => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
+    }
+  }, []);
+
+  const pauseAndScheduleResume = useCallback(() => {
+    isInteractingRef.current = true;
+    stopAutoRotate();
+    if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+    resumeTimerRef.current = setTimeout(() => {
+      isInteractingRef.current = false;
+      startAutoRotate();
+    }, 2000);
+  }, [stopAutoRotate, startAutoRotate]);
+
+  // Start auto-rotate on mount
+  useEffect(() => {
+    startAutoRotate();
+    return () => {
+      stopAutoRotate();
+      if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+    };
+  }, [startAutoRotate, stopAutoRotate]);
+
+  // Desktop mouse tilt
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const card = cardRef.current;
+      if (!card) return;
+      const rect = card.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const centerX = rect.width / 2;
+      const centerY = rect.height / 2;
+      const rx = ((y - centerY) / centerY) * -maxTilt;
+      const ry = ((x - centerX) / centerX) * maxTilt;
+      rxRef.current = rx;
+      ryRef.current = ry;
+      applyTransform(rx, ry, true);
+    },
+    [maxTilt, applyTransform],
+  );
+
+  const handleMouseEnter = useCallback(() => {
+    isInteractingRef.current = true;
+    stopAutoRotate();
+    if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+  }, [stopAutoRotate]);
+
+  const handleMouseLeave = useCallback(() => {
+    // Animate back to neutral first
+    const card = cardRef.current;
+    if (card) {
+      card.style.transition = "transform 0.4s ease";
+      card.style.transform =
+        "perspective(800px) rotateX(0deg) rotateY(0deg) translateZ(0)";
+      card.style.boxShadow = "";
+    }
+    rxRef.current = 0;
+    ryRef.current = 0;
+    pauseAndScheduleResume();
+  }, [pauseAndScheduleResume]);
+
+  // Touch handlers — tilt for small moves, swipe for large moves
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      touchStartXRef.current = e.touches[0].clientX;
+      touchStartYRef.current = e.touches[0].clientY;
+      isInteractingRef.current = true;
+      stopAutoRotate();
+      if (resumeTimerRef.current) clearTimeout(resumeTimerRef.current);
+    },
+    [stopAutoRotate],
+  );
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      if (touchStartXRef.current === null || touchStartYRef.current === null)
+        return;
+      const dx = e.touches[0].clientX - touchStartXRef.current;
+      const dy = e.touches[0].clientY - touchStartYRef.current;
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+
+      if (absDx < 50 && absDy < 50) {
+        // Tilt mode — map finger position to rotation
+        const card = cardRef.current;
+        if (!card) return;
+        const rect = card.getBoundingClientRect();
+        const touchX = e.touches[0].clientX - rect.left;
+        const touchY = e.touches[0].clientY - rect.top;
+        const centerX = rect.width / 2;
+        const centerY = rect.height / 2;
+        const rx = ((touchY - centerY) / centerY) * -maxTilt;
+        const ry = ((touchX - centerX) / centerX) * maxTilt;
+        rxRef.current = rx;
+        ryRef.current = ry;
+        applyTransform(rx, ry, true);
+        // Prevent page scroll when tilting
+        if (absDx > absDy) e.preventDefault();
+      }
+      // if >=50px it's a swipe — handled in touchEnd, let default scroll pass
+    },
+    [maxTilt, applyTransform],
+  );
+
+  const handleTouchEnd = useCallback(
+    (e: React.TouchEvent) => {
+      if (touchStartXRef.current === null) return;
+      const dx = e.changedTouches[0].clientX - touchStartXRef.current;
+
+      // Swipe to change image
+      if (Math.abs(dx) > 50) {
+        const imgs = cardRef.current; // just need to check images
+        void imgs; // suppress lint
+        if (dx < 0) {
+          setImgIndex((prev) => prev + 1); // clamped in render
+        } else {
+          setImgIndex((prev) => Math.max(prev - 1, 0));
+        }
+      }
+
+      // Snap back to neutral
+      const card = cardRef.current;
+      if (card) {
+        card.style.transition = "transform 0.4s ease";
+        card.style.transform =
+          "perspective(800px) rotateX(0deg) rotateY(0deg) translateZ(0)";
+      }
+      rxRef.current = 0;
+      ryRef.current = 0;
+      touchStartXRef.current = null;
+      touchStartYRef.current = null;
+      pauseAndScheduleResume();
+    },
+    [pauseAndScheduleResume],
+  );
+
+  const { data: images } = useProductImages(product.id);
   const { data: ratingData } = useProductRating(product.id);
 
   const category = categories?.find((c) => c.id === product.categoryId);
   const salePrice = Number(product.mrp) - Number(product.discountAmount);
   const hasDiscount = Number(product.discountAmount) > 0;
-  const hasOptions =
-    (product.sizes && product.sizes.length > 0) ||
-    (product.colours && product.colours.length > 0);
 
-  const imgSrc =
-    fullProduct?.image && fullProduct.image.length > 0
-      ? uint8ToDataUrl(fullProduct.image, fullProduct.imageType)
-      : null;
+  const hasMultipleImages = images && images.length > 1;
+  const clampedImgIndex = images ? Math.min(imgIndex, images.length - 1) : 0;
 
   const handleAddToCart = (e: React.MouseEvent) => {
     e.stopPropagation();
+    const hasOptions =
+      (product.sizes && product.sizes.length > 0) ||
+      (product.colours && product.colours.length > 0);
     if (hasOptions) {
       setModalOpen(true);
     } else {
@@ -109,20 +301,48 @@ export function ProductCard({
   return (
     <>
       <motion.div
+        ref={cardRef}
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4, delay: index * 0.05 }}
-        className="card-luxury group flex flex-col overflow-hidden hover:border-gold transition-colors duration-300 cursor-pointer"
+        className="card-luxury card-3d holo-border group flex flex-col overflow-hidden hover:border-gold transition-colors duration-300 cursor-pointer"
+        style={{ willChange: "transform" }}
         onClick={handleCardClick}
+        onMouseEnter={handleMouseEnter}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={handleMouseLeave}
         data-ocid={`product.item.${index + 1}`}
       >
-        <div className="relative aspect-[3/4] overflow-hidden bg-secondary">
-          {imgSrc ? (
-            <img
-              src={imgSrc}
-              alt={product.name}
-              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-            />
+        <div
+          className="relative aspect-[3/4] overflow-hidden bg-secondary"
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+        >
+          {images && images.length > 0 ? (
+            <div
+              className="flex h-full"
+              style={{
+                width: `${images.length * 100}%`,
+                transform: `translateX(-${clampedImgIndex * (100 / images.length)}%)`,
+                transition: "transform 0.3s ease",
+              }}
+            >
+              {images.map((img, i) => (
+                <div
+                  key={`${img.imageType}-${i}`}
+                  style={{ width: `${100 / images.length}%` }}
+                  className="h-full flex-shrink-0"
+                >
+                  <img
+                    src={uint8ToDataUrl(img.imageData, img.imageType)}
+                    alt={`${product.name} ${i + 1}`}
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    loading="lazy"
+                  />
+                </div>
+              ))}
+            </div>
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <Tag className="w-12 h-12 text-muted-foreground/30" />
@@ -139,6 +359,28 @@ export function ProductCard({
             <Badge className="absolute top-2 right-2 bg-gold text-background text-xs">
               SALE
             </Badge>
+          )}
+          {/* Dot indicators */}
+          {hasMultipleImages && (
+            <div className="absolute bottom-1.5 left-0 right-0 flex justify-center gap-1">
+              {images.map((img, i) => (
+                <button
+                  key={`dot-${i}-${img.imageType}`}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setImgIndex(i);
+                  }}
+                  className="w-1.5 h-1.5 rounded-full transition-all"
+                  style={{
+                    background:
+                      i === clampedImgIndex
+                        ? "oklch(0.78 0.13 85)"
+                        : "oklch(0.78 0.13 85 / 0.35)",
+                  }}
+                />
+              ))}
+            </div>
           )}
         </div>
 

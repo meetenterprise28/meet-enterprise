@@ -6,9 +6,6 @@ import Text "mo:core/Text";
 import Order "mo:core/Order";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
-import MixinStorage "blob-storage/Mixin";
-import AccessControl "authorization/access-control";
-import MixinAuthorization "authorization/MixinAuthorization";
 import Blob "mo:core/Blob";
 import Float "mo:core/Float";
 import Int "mo:core/Int";
@@ -16,9 +13,6 @@ import Int "mo:core/Int";
 
 
 actor {
-  let accessControlState = AccessControl.initState();
-  include MixinAuthorization(accessControlState);
-  include MixinStorage();
 
   let ADMIN_CODE : Text = "2537";
 
@@ -61,6 +55,11 @@ actor {
     sizes : [Text];
     colours : [Text];
     inStock : Bool;
+  };
+
+  public type ProductImage = {
+    imageData : Blob;
+    imageType : Text;
   };
 
   public type OrderItem = {
@@ -123,6 +122,15 @@ actor {
     count : Nat;
   };
 
+  public type ReelComment = {
+    id : Nat;
+    reelId : Nat;
+    userId : Principal;
+    userName : Text;
+    text : Text;
+    createdAt : Int;
+  };
+
   func compareOrderByCreatedAt(o1 : Order, o2 : Order) : Order.Order {
     if (o1.createdAt > o2.createdAt) { #less } else if (o1.createdAt < o2.createdAt) {
       #greater;
@@ -155,69 +163,101 @@ actor {
     };
   };
 
+  func compareCommentByCreatedAt(c1 : ReelComment, c2 : ReelComment) : Order.Order {
+    if (c1.createdAt < c2.createdAt) { #less } else if (c1.createdAt > c2.createdAt) {
+      #greater;
+    } else {
+      Nat.compare(c1.id, c2.id);
+    };
+  };
+
   // ── Stable backing storage ───────────────────────────────────────────
-  stable var _stableUserProfiles   : [(Principal, UserProfile)]  = [];
-  stable var _stableCategories     : [(Nat, Category)]           = [];
-  stable var _stableProducts       : [(Nat, Product)]            = [];
-  stable var _stableOrders         : [(Text, Order)]             = [];
-  stable var _stableVouchers       : [(Nat, Voucher)]            = [];
-  stable var _stableSchemes        : [(Nat, Scheme)]             = [];
-  stable var _stableReels          : [(Nat, Reel)]               = [];
-  stable var _stableWishlists      : [(Principal, [Nat])]        = [];
-  stable var _stableDeliveryCodes  : [(Text, Text)]              = [];
-  stable var _stableRatings        : [(Text, ProductRating)]     = [];
+  // Compatibility stub: accessControlState was declared by the old MixinAuthorization include.
+  // The old type was {var adminAssigned : Bool; userRoles : Map<Principal, UserRole>}.
+  // Kept here so the upgrade does not discard the previously-stable variable (M0169/M0170).
+  var accessControlState : { var adminAssigned : Bool; userRoles : Map.Map<Principal, { #admin; #guest; #user }> } = {
+    var adminAssigned = false;
+    userRoles = Map.empty<Principal, { #admin; #guest; #user }>();
+  };
+
+  var _stableUserProfiles        : [(Principal, UserProfile)]  = [];
+  var _stableCategories          : [(Nat, Category)]           = [];
+  var _stableProducts            : [(Nat, Product)]            = [];
+  var _stableOrders              : [(Text, Order)]             = [];
+  var _stableVouchers            : [(Nat, Voucher)]            = [];
+  var _stableSchemes             : [(Nat, Scheme)]             = [];
+  var _stableReels               : [(Nat, Reel)]               = [];
+  var _stableWishlists           : [(Principal, [Nat])]        = [];
+  var _stableDeliveryCodes       : [(Text, Text)]              = [];
+  var _stableRatings             : [(Text, ProductRating)]     = [];
+  var _stableReelComments        : [(Text, ReelComment)]       = [];
+  var _stableReelLikes           : [(Text, Bool)]              = [];
+  var _stableAdditionalImages    : [(Nat, [ProductImage])]     = [];
 
   var nextCategoryId  : Nat = 1;
   var nextProductId   : Nat = 1;
   var nextVoucherId   : Nat = 1;
   var nextSchemeId    : Nat = 1;
   var nextReelId      : Nat = 1;
-  stable var _nextCategoryId  : Nat = 1;
-  stable var _nextProductId   : Nat = 1;
-  stable var _nextVoucherId   : Nat = 1;
-  stable var _nextSchemeId    : Nat = 1;
-  stable var _nextReelId      : Nat = 1;
-  stable var paymentSettings  : ?PaymentSettings = null;
-  stable var currentTheme     : Text = "bone-white";
+  var nextCommentId   : Nat = 1;
+  var _nextCategoryId  : Nat = 1;
+  var _nextProductId   : Nat = 1;
+  var _nextVoucherId   : Nat = 1;
+  var _nextSchemeId    : Nat = 1;
+  var _nextReelId      : Nat = 1;
+  var _nextCommentId   : Nat = 1;
+  var paymentSettings  : ?PaymentSettings = null;
+  var currentTheme     : Text = "bone-white";
+  var instagramHandle  : Text = "";
 
   // ── In-memory Maps ────────────────────────────────────────────────────
-  let userProfiles   = Map.empty<Principal, UserProfile>();
-  let categories     = Map.empty<Nat, Category>();
-  let products       = Map.empty<Nat, Product>();
-  let orders         = Map.empty<Text, Order>();
-  let vouchers       = Map.empty<Nat, Voucher>();
-  let schemes        = Map.empty<Nat, Scheme>();
-  let reels          = Map.empty<Nat, Reel>();
-  let wishlists      = Map.empty<Principal, [Nat]>();
-  let deliveryCodes  = Map.empty<Text, Text>();
-  let ratings        = Map.empty<Text, ProductRating>();
+  let userProfiles       = Map.empty<Principal, UserProfile>();
+  let categories         = Map.empty<Nat, Category>();
+  let products           = Map.empty<Nat, Product>();
+  let orders             = Map.empty<Text, Order>();
+  let vouchers           = Map.empty<Nat, Voucher>();
+  let schemes            = Map.empty<Nat, Scheme>();
+  let reels              = Map.empty<Nat, Reel>();
+  let wishlists          = Map.empty<Principal, [Nat]>();
+  let deliveryCodes      = Map.empty<Text, Text>();
+  let ratings            = Map.empty<Text, ProductRating>();
+  let reelComments       = Map.empty<Text, ReelComment>();
+  let reelLikes          = Map.empty<Text, Bool>();
+  let additionalImages   = Map.empty<Nat, [ProductImage]>();
 
   do {
-    for ((k, v) in _stableUserProfiles.vals())  { userProfiles.add(k, v) };
-    for ((k, v) in _stableCategories.vals())    { categories.add(k, v) };
-    for ((k, v) in _stableProducts.vals())      { products.add(k, v) };
-    for ((k, v) in _stableOrders.vals())        { orders.add(k, v) };
-    for ((k, v) in _stableVouchers.vals())      { vouchers.add(k, v) };
-    for ((k, v) in _stableSchemes.vals())       { schemes.add(k, v) };
-    for ((k, v) in _stableReels.vals())         { reels.add(k, v) };
-    for ((k, v) in _stableWishlists.vals())     { wishlists.add(k, v) };
-    for ((k, v) in _stableDeliveryCodes.vals()) { deliveryCodes.add(k, v) };
-    for ((k, v) in _stableRatings.vals())       { ratings.add(k, v) };
+    for ((k, v) in _stableUserProfiles.vals())     { userProfiles.add(k, v) };
+    for ((k, v) in _stableCategories.vals())        { categories.add(k, v) };
+    for ((k, v) in _stableProducts.vals())          { products.add(k, v) };
+    for ((k, v) in _stableOrders.vals())            { orders.add(k, v) };
+    for ((k, v) in _stableVouchers.vals())          { vouchers.add(k, v) };
+    for ((k, v) in _stableSchemes.vals())           { schemes.add(k, v) };
+    for ((k, v) in _stableReels.vals())             { reels.add(k, v) };
+    for ((k, v) in _stableWishlists.vals())         { wishlists.add(k, v) };
+    for ((k, v) in _stableDeliveryCodes.vals())     { deliveryCodes.add(k, v) };
+    for ((k, v) in _stableRatings.vals())           { ratings.add(k, v) };
+    for ((k, v) in _stableReelComments.vals())      { reelComments.add(k, v) };
+    for ((k, v) in _stableReelLikes.vals())         { reelLikes.add(k, v) };
+    for ((k, v) in _stableAdditionalImages.vals())  { additionalImages.add(k, v) };
     nextCategoryId := _nextCategoryId;
     nextProductId  := _nextProductId;
     nextVoucherId  := _nextVoucherId;
     nextSchemeId   := _nextSchemeId;
     nextReelId     := _nextReelId;
-    _stableUserProfiles  := [];
-    _stableCategories    := [];
-    _stableProducts      := [];
-    _stableOrders        := [];
-    _stableVouchers      := [];
-    _stableSchemes       := [];
-    _stableReels         := [];
-    _stableWishlists     := [];
-    _stableDeliveryCodes := [];
-    _stableRatings       := [];
+    nextCommentId  := _nextCommentId;
+    _stableUserProfiles      := [];
+    _stableCategories        := [];
+    _stableProducts          := [];
+    _stableOrders            := [];
+    _stableVouchers          := [];
+    _stableSchemes           := [];
+    _stableReels             := [];
+    _stableWishlists         := [];
+    _stableDeliveryCodes     := [];
+    _stableRatings           := [];
+    _stableReelComments      := [];
+    _stableReelLikes         := [];
+    _stableAdditionalImages  := [];
   };
 
   system func preupgrade() {
@@ -261,39 +301,59 @@ actor {
     ratings.forEach(func(k, v) { ratp.add((k, v)) });
     _stableRatings := ratp.toArray();
 
+    let rcp = List.empty<(Text, ReelComment)>();
+    reelComments.forEach(func(k, v) { rcp.add((k, v)) });
+    _stableReelComments := rcp.toArray();
+
+    let rlp = List.empty<(Text, Bool)>();
+    reelLikes.forEach(func(k, v) { rlp.add((k, v)) });
+    _stableReelLikes := rlp.toArray();
+
+    let aip = List.empty<(Nat, [ProductImage])>();
+    additionalImages.forEach(func(k, v) { aip.add((k, v)) });
+    _stableAdditionalImages := aip.toArray();
+
     _nextCategoryId := nextCategoryId;
     _nextProductId  := nextProductId;
     _nextVoucherId  := nextVoucherId;
     _nextSchemeId   := nextSchemeId;
     _nextReelId     := nextReelId;
+    _nextCommentId  := nextCommentId;
   };
 
   system func postupgrade() {
-    for ((k, v) in _stableUserProfiles.vals())  { userProfiles.add(k, v) };
-    for ((k, v) in _stableCategories.vals())    { categories.add(k, v) };
-    for ((k, v) in _stableProducts.vals())      { products.add(k, v) };
-    for ((k, v) in _stableOrders.vals())        { orders.add(k, v) };
-    for ((k, v) in _stableVouchers.vals())      { vouchers.add(k, v) };
-    for ((k, v) in _stableSchemes.vals())       { schemes.add(k, v) };
-    for ((k, v) in _stableReels.vals())         { reels.add(k, v) };
-    for ((k, v) in _stableWishlists.vals())     { wishlists.add(k, v) };
-    for ((k, v) in _stableDeliveryCodes.vals()) { deliveryCodes.add(k, v) };
-    for ((k, v) in _stableRatings.vals())       { ratings.add(k, v) };
+    for ((k, v) in _stableUserProfiles.vals())     { userProfiles.add(k, v) };
+    for ((k, v) in _stableCategories.vals())        { categories.add(k, v) };
+    for ((k, v) in _stableProducts.vals())          { products.add(k, v) };
+    for ((k, v) in _stableOrders.vals())            { orders.add(k, v) };
+    for ((k, v) in _stableVouchers.vals())          { vouchers.add(k, v) };
+    for ((k, v) in _stableSchemes.vals())           { schemes.add(k, v) };
+    for ((k, v) in _stableReels.vals())             { reels.add(k, v) };
+    for ((k, v) in _stableWishlists.vals())         { wishlists.add(k, v) };
+    for ((k, v) in _stableDeliveryCodes.vals())     { deliveryCodes.add(k, v) };
+    for ((k, v) in _stableRatings.vals())           { ratings.add(k, v) };
+    for ((k, v) in _stableReelComments.vals())      { reelComments.add(k, v) };
+    for ((k, v) in _stableReelLikes.vals())         { reelLikes.add(k, v) };
+    for ((k, v) in _stableAdditionalImages.vals())  { additionalImages.add(k, v) };
     nextCategoryId := _nextCategoryId;
     nextProductId  := _nextProductId;
     nextVoucherId  := _nextVoucherId;
     nextSchemeId   := _nextSchemeId;
     nextReelId     := _nextReelId;
-    _stableUserProfiles  := [];
-    _stableCategories    := [];
-    _stableProducts      := [];
-    _stableOrders        := [];
-    _stableVouchers      := [];
-    _stableSchemes       := [];
-    _stableReels         := [];
-    _stableWishlists     := [];
-    _stableDeliveryCodes := [];
-    _stableRatings       := [];
+    nextCommentId  := _nextCommentId;
+    _stableUserProfiles      := [];
+    _stableCategories        := [];
+    _stableProducts          := [];
+    _stableOrders            := [];
+    _stableVouchers          := [];
+    _stableSchemes           := [];
+    _stableReels             := [];
+    _stableWishlists         := [];
+    _stableDeliveryCodes     := [];
+    _stableRatings           := [];
+    _stableReelComments      := [];
+    _stableReelLikes         := [];
+    _stableAdditionalImages  := [];
   };
 
   // ── Public read endpoints ─────────────────────────────────────────────
@@ -324,6 +384,57 @@ actor {
     switch (products.get(id)) {
       case (null) { Runtime.trap("Product not found") };
       case (?product) { product };
+    };
+  };
+
+  // Returns all images for a product: primary image first, then additional images
+  public query func getProductImages(productId : Nat) : async [ProductImage] {
+    switch (products.get(productId)) {
+      case (null) { [] };
+      case (?product) {
+        let result = List.empty<ProductImage>();
+        result.add({ imageData = product.image; imageType = product.imageType });
+        switch (additionalImages.get(productId)) {
+          case (?imgs) {
+            for (img in imgs.vals()) { result.add(img) };
+          };
+          case null {};
+        };
+        result.toArray();
+      };
+    };
+  };
+
+  public shared func addProductImage(adminToken : Text, productId : Nat, imageData : Blob, imageType : Text) : async Nat {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    if (not products.containsKey(productId)) { Runtime.trap("Product not found") };
+    let current = switch (additionalImages.get(productId)) { case (?imgs) imgs; case null [] };
+    // Max 6 additional images (7 total including primary)
+    let newList = List.empty<ProductImage>();
+    for (img in current.vals()) { newList.add(img) };
+    newList.add({ imageData; imageType });
+    let newArr = newList.toArray();
+    additionalImages.add(productId, newArr);
+    newArr.size();
+  };
+
+  public shared func removeProductImage(adminToken : Text, productId : Nat, imageIndex : Nat) : async () {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    // imageIndex 0 = primary image (cannot remove), 1+ = additional images (index - 1 in additionalImages array)
+    if (imageIndex == 0) { Runtime.trap("Cannot remove the primary image. Update it by editing the product instead.") };
+    let additionalIndex : Nat = imageIndex - 1;
+    switch (additionalImages.get(productId)) {
+      case (null) { Runtime.trap("No additional images found") };
+      case (?imgs) {
+        if (additionalIndex >= imgs.size()) { Runtime.trap("Image index out of range") };
+        let newList = List.empty<ProductImage>();
+        var i : Nat = 0;
+        for (img in imgs.vals()) {
+          if (i != additionalIndex) { newList.add(img) };
+          i += 1;
+        };
+        additionalImages.add(productId, newList.toArray());
+      };
     };
   };
 
@@ -359,13 +470,71 @@ actor {
     };
   };
 
+  public query func getInstagramHandle() : async Text {
+    instagramHandle;
+  };
+
+  // ── Reel comments ────────────────────────────────────────────
+
+  public shared ({ caller }) func addReelComment(reelId : Nat, text : Text) : async ReelComment {
+    let userName = switch (userProfiles.get(caller)) {
+      case (?p) p.name;
+      case null "Guest";
+    };
+    let comment : ReelComment = {
+      id = nextCommentId;
+      reelId;
+      userId = caller;
+      userName;
+      text;
+      createdAt = Time.now();
+    };
+    let key = reelId.toText() # "-" # nextCommentId.toText();
+    reelComments.add(key, comment);
+    nextCommentId += 1;
+    comment;
+  };
+
+  public query func getReelComments(reelId : Nat) : async [ReelComment] {
+    let result = List.empty<ReelComment>();
+    reelComments.forEach(func(_k, c : ReelComment) {
+      if (c.reelId == reelId) { result.add(c) };
+    });
+    result.toArray().sort(compareCommentByCreatedAt);
+  };
+
+  // ── Reel likes ───────────────────────────────────────────────
+
+  public shared ({ caller }) func likeReel(reelId : Nat) : async () {
+    let key = reelId.toText() # "-" # caller.toText();
+    reelLikes.add(key, true);
+  };
+
+  public shared ({ caller }) func unlikeReel(reelId : Nat) : async () {
+    let key = reelId.toText() # "-" # caller.toText();
+    reelLikes.remove(key);
+  };
+
+  public query func isReelLiked(reelId : Nat, userId : Principal) : async Bool {
+    let key = reelId.toText() # "-" # userId.toText();
+    switch (reelLikes.get(key)) { case (?v) v; case null false };
+  };
+
+  public query func getReelLikeCount(reelId : Nat) : async Nat {
+    var count : Nat = 0;
+    reelLikes.forEach(func(k, _v) {
+      if (k.startsWith(#text (reelId.toText() # "-"))) { count += 1 };
+    });
+    count;
+  };
+
   // ── User profile ────────────────────────────────────────────
 
   public query ({ caller }) func getCallerUserProfile() : async ?UserProfile {
     userProfiles.get(caller);
   };
 
-  public query ({ caller }) func getUserProfile(user : Principal) : async ?UserProfile {
+  public query ({ caller = _ }) func getUserProfile(user : Principal) : async ?UserProfile {
     userProfiles.get(user);
   };
 
@@ -484,6 +653,10 @@ actor {
     deliveryCodes.get(orderId);
   };
 
+  public query func getOrderDeliveryCode(orderId : Text) : async ?Text {
+    deliveryCodes.get(orderId);
+  };
+
   public shared func verifyDeliveryCode(orderId : Text, code : Text) : async Bool {
     switch (deliveryCodes.get(orderId)) {
       case (null) { false };
@@ -523,6 +696,13 @@ actor {
   public shared func setTheme(adminToken : Text, themeId : Text) : async () {
     if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
     currentTheme := themeId;
+  };
+
+  // ── Instagram handle ─────────────────────────────────────────
+
+  public shared func setInstagramHandle(adminToken : Text, handle : Text) : async () {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    instagramHandle := handle;
   };
 
   // ── Admin endpoints ──────────────────────────────────────────
@@ -625,6 +805,7 @@ actor {
     if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
     if (not products.containsKey(id)) { Runtime.trap("Product not found") };
     products.remove(id);
+    additionalImages.remove(id);
   };
 
   public shared func updateOrderStatus(adminToken : Text, orderId : Text, status : Text) : async () {
@@ -658,6 +839,12 @@ actor {
     vouchers.values().toArray().sort(compareVoucherByCreatedAt);
   };
 
+
+  public shared func deleteOrder(adminToken : Text, orderId : Text) : async () {
+    if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
+    orders.remove(orderId);
+    deliveryCodes.remove(orderId);
+  };
   public shared func createScheme(adminToken : Text, title : Text, description : Text, couponCode : Text) : async Scheme {
     if (not isValidAdmin(adminToken)) { Runtime.trap("Unauthorized: Invalid admin code") };
     let scheme : Scheme = { id = nextSchemeId; title; description; couponCode; createdAt = Time.now() };

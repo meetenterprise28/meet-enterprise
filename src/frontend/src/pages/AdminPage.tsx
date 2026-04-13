@@ -33,7 +33,11 @@ import {
   Check,
   Edit2,
   Gift,
+  ImagePlus,
+  Instagram,
   Key,
+  Loader2,
+  MapPin,
   Package,
   Palette,
   Play,
@@ -44,14 +48,16 @@ import {
   Trash2,
   Upload,
   Users,
+  X,
 } from "lucide-react";
 import { motion } from "motion/react";
 import type React from "react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { Reel } from "../backend.d";
 import { useActor } from "../hooks/useActor";
 import {
+  useAddProductImage,
   useAllOrders,
   useAllUsers,
   useCategories,
@@ -60,12 +66,15 @@ import {
   useCreateReel,
   useCreateScheme,
   useDeleteCategory,
+  useDeleteOrder,
   useDeleteProduct,
   useDeleteReel,
   useDeleteScheme,
   usePaymentSettings,
+  useProductImages,
   useProducts,
   useReels,
+  useRemoveProductImage,
   useSchemes,
   useSetPaymentSettings,
   useUpdateCategory,
@@ -164,7 +173,7 @@ export function AdminPage() {
         <div className="w-16 h-px bg-gold mb-10" />
 
         <Tabs defaultValue="users">
-          <TabsList className="grid grid-cols-4 md:grid-cols-8 mb-8 bg-secondary border border-gold-border">
+          <TabsList className="grid grid-cols-5 md:grid-cols-9 mb-8 bg-secondary border border-gold-border">
             {[
               {
                 value: "users",
@@ -202,6 +211,11 @@ export function AdminPage() {
                 label: "Appearance",
               },
               {
+                value: "instagram",
+                icon: <Instagram className="w-3.5 h-3.5" />,
+                label: "Instagram",
+              },
+              {
                 value: "settings",
                 icon: <Settings className="w-3.5 h-3.5" />,
                 label: "Settings",
@@ -237,6 +251,9 @@ export function AdminPage() {
           </TabsContent>
           <TabsContent value="appearance">
             <AppearanceTab />
+          </TabsContent>
+          <TabsContent value="instagram">
+            <InstagramTab />
           </TabsContent>
           <TabsContent value="settings">
             <SettingsTab />
@@ -517,7 +534,6 @@ function parseCommaSeparated(input: string): string[] {
 function ProductsTab() {
   const { data: products, isLoading } = useProducts();
   const { data: categories } = useCategories();
-  const { actor } = useActor();
   const createProduct = useCreateProduct();
   const updateProduct = useUpdateProduct();
   const deleteProduct = useDeleteProduct();
@@ -527,15 +543,27 @@ function ProductsTab() {
   const [sizeInput, setSizeInput] = useState("");
   const [colourInput, setColourInput] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const addImageRef = useRef<HTMLInputElement>(null);
+  const bulkFileRef = useRef<HTMLInputElement>(null);
+  const [addImagePending, setAddImagePending] = useState(false);
+  const [pendingBulkImages, setPendingBulkImages] = useState<
+    Array<{ bytes: Uint8Array; type: string }>
+  >([]);
+
+  const addProductImage = useAddProductImage();
+  const removeProductImage = useRemoveProductImage();
+  const { data: productImages, isLoading: imagesLoading } =
+    useProductImages(editingId);
 
   const resetForm = () => {
+    setPendingBulkImages([]);
     setForm(DEFAULT_FORM);
     setEditingId(null);
     setSizeInput("");
     setColourInput("");
   };
 
-  const openEdit = async (p: {
+  const openEdit = (p: {
     id: bigint;
     name: string;
     description: string;
@@ -546,31 +574,24 @@ function ProductsTab() {
     sizes: string[];
     colours: string[];
   }) => {
-    try {
-      if (!actor) {
-        toast.error("Backend not connected");
-        return;
-      }
-      const full = await actor.getProductById(p.id);
-      setEditingId(full.id);
-      setForm({
-        name: full.name,
-        description: full.description,
-        mrp: Number(full.mrp).toString(),
-        discountAmount: Number(full.discountAmount).toString(),
-        categoryId: full.categoryId.toString(),
-        inStock: full.inStock,
-        sizes: [...full.sizes],
-        colours: [...full.colours],
-        image: full.image,
-        imageType: full.imageType || "",
-      });
-      setSizeInput(full.sizes.join(", "));
-      setColourInput(full.colours.join(", "));
-      setDialogOpen(true);
-    } catch {
-      toast.error("Failed to load product details");
-    }
+    // Open dialog instantly using already-loaded product list data.
+    // No backend call needed – image is resolved from productImages on save.
+    setEditingId(p.id);
+    setForm({
+      name: p.name,
+      description: p.description,
+      mrp: Number(p.mrp).toString(),
+      discountAmount: Number(p.discountAmount).toString(),
+      categoryId: p.categoryId.toString(),
+      inStock: p.inStock,
+      sizes: [...p.sizes],
+      colours: [...p.colours],
+      image: null, // null = keep existing; resolved from productImages on save
+      imageType: "",
+    });
+    setSizeInput(p.sizes.join(", "));
+    setColourInput(p.colours.join(", "));
+    setDialogOpen(true);
   };
 
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -595,6 +616,22 @@ function ProductsTab() {
     }
     const parsedSizes = parseCommaSeparated(sizeInput);
     const parsedColours = parseCommaSeparated(colourInput);
+
+    // Resolve image: use newly uploaded image if changed, else fall back to
+    // the primary productImage (already loaded in background via useProductImages).
+    let resolvedImage = form.image;
+    let resolvedImageType = form.imageType;
+    if (resolvedImage === null && editingId !== null) {
+      if (productImages && productImages.length > 0) {
+        resolvedImage = productImages[0].imageData;
+        resolvedImageType = productImages[0].imageType;
+      } else {
+        // Images haven't loaded yet — use empty placeholder (shouldn't normally happen)
+        resolvedImage = new Uint8Array();
+        resolvedImageType = "image/jpeg";
+      }
+    }
+
     const info = {
       name: form.name,
       description: form.description,
@@ -604,19 +641,44 @@ function ProductsTab() {
       inStock: form.inStock,
       sizes: parsedSizes,
       colours: parsedColours,
-      image: form.image ?? new Uint8Array(),
-      imageType: form.imageType || "image/jpeg",
+      image: resolvedImage ?? new Uint8Array(),
+      imageType: resolvedImageType || "image/jpeg",
     };
     try {
       if (editingId !== null) {
         await updateProduct.mutateAsync({ id: editingId, info });
         toast.success("Product updated");
+        setDialogOpen(false);
+        resetForm();
       } else {
-        await createProduct.mutateAsync(info);
-        toast.success("Product created");
+        const newProduct = await createProduct.mutateAsync(info);
+        // Upload any pending bulk images
+        if (pendingBulkImages.length > 0) {
+          toast.success(
+            `Product created! Uploading ${pendingBulkImages.length} additional image(s)...`,
+          );
+          const token = getAdminToken();
+          if (token) {
+            for (const img of pendingBulkImages) {
+              try {
+                await addProductImage.mutateAsync({
+                  productId: newProduct.id,
+                  imageData: img.bytes,
+                  imageType: img.type || "image/jpeg",
+                });
+              } catch {
+                /* continue */
+              }
+            }
+          }
+          setPendingBulkImages([]);
+          toast.success("All images uploaded!");
+        } else {
+          toast.success("Product created! You can now add more images below.");
+        }
+        // Switch to edit mode so additional images section appears
+        setEditingId(newProduct.id);
       }
-      setDialogOpen(false);
-      resetForm();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Operation failed");
     }
@@ -829,16 +891,68 @@ function ProductsTab() {
                   className="hidden"
                   onChange={handleImageChange}
                 />
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="mt-1 w-full border-gold-border text-muted-foreground hover:text-gold"
-                  onClick={() => fileRef.current?.click()}
-                  data-ocid="admin.product.image.upload_button"
-                >
-                  <Upload className="w-4 h-4 mr-2" />
-                  {form.image ? "Image Selected" : "Upload Image"}
-                </Button>
+                <input
+                  ref={bulkFileRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={async (e) => {
+                    const files = Array.from(e.target.files || []);
+                    if (!files.length) return;
+                    try {
+                      const result = await fileToUint8Array(files[0]);
+                      setForm((f) => ({
+                        ...f,
+                        image: result.bytes,
+                        imageType: result.type || "image/jpeg",
+                      }));
+                      if (files.length > 1) {
+                        const additional = await Promise.all(
+                          files.slice(1).map((file) => fileToUint8Array(file)),
+                        );
+                        setPendingBulkImages(
+                          additional.map((r) => ({
+                            bytes: r.bytes,
+                            type: r.type || "image/jpeg",
+                          })),
+                        );
+                        toast.success(
+                          `1 primary + ${files.length - 1} additional image(s) queued. Save to upload all.`,
+                        );
+                      } else {
+                        toast.success("1 image ready. Save product to upload.");
+                      }
+                    } catch {
+                      toast.error(
+                        "Could not load image. Please try a JPG or PNG file.",
+                      );
+                    }
+                    if (bulkFileRef.current) bulkFileRef.current.value = "";
+                  }}
+                />
+                <div className="mt-1 flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1 border-gold-border text-muted-foreground hover:text-gold"
+                    onClick={() => fileRef.current?.click()}
+                    data-ocid="admin.product.image.upload_button"
+                  >
+                    <Upload className="w-4 h-4 mr-2" />
+                    {form.image ? "Selected" : "Upload Image"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1 border-gold/50 text-gold/70 hover:text-gold hover:border-gold"
+                    onClick={() => bulkFileRef.current?.click()}
+                    data-ocid="admin.product.bulk_image.upload_button"
+                  >
+                    <ImagePlus className="w-4 h-4 mr-2" />
+                    Bulk Image
+                  </Button>
+                </div>
               </div>
               <Button
                 className="btn-gold tracking-widest uppercase"
@@ -853,10 +967,137 @@ function ProductsTab() {
                     : "Create"}
               </Button>
             </div>
+
+            {/* Additional Images Section - only shown when editing an existing product */}
+            {editingId !== null && (
+              <>
+                <div className="border-t border-gold-border pt-4 mt-2">
+                  <Label className="text-xs tracking-widest uppercase text-muted-foreground block mb-3">
+                    Additional Images ({productImages?.length ?? 0} total)
+                  </Label>
+                  {imagesLoading ? (
+                    <div className="flex gap-2 flex-wrap">
+                      {[1, 2].map((i) => (
+                        <div
+                          key={i}
+                          className="w-16 h-16 rounded bg-secondary animate-pulse"
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex gap-2 flex-wrap">
+                      {productImages?.map((img, i) => (
+                        <div
+                          key={`${img.imageType}-${i}`}
+                          className="relative group/thumb"
+                        >
+                          <img
+                            src={uint8ToDataUrl(img.imageData, img.imageType)}
+                            alt={`Thumbnail ${i + 1}`}
+                            className="w-16 h-16 object-cover rounded border border-gold-border/50"
+                          />
+                          {i > 0 && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  await removeProductImage.mutateAsync({
+                                    productId: editingId,
+                                    imageIndex: BigInt(i),
+                                  });
+                                  toast.success("Image removed");
+                                } catch {
+                                  toast.error("Failed to remove image");
+                                }
+                              }}
+                              className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-destructive flex items-center justify-center opacity-0 group-hover/thumb:opacity-100 transition-opacity"
+                              data-ocid="admin.product.image.delete_button"
+                            >
+                              <X className="w-2.5 h-2.5 text-white" />
+                            </button>
+                          )}
+                          {i === 0 && (
+                            <span className="absolute bottom-0 left-0 right-0 text-[9px] text-center bg-background/80 text-gold-muted rounded-b">
+                              Primary
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                      {true && (
+                        <>
+                          <input
+                            ref={addImageRef}
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="hidden"
+                            onChange={async (e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (files.length === 0) return;
+                              const toUpload = files; // unlimited images
+                              setAddImagePending(true);
+                              try {
+                                for (const file of toUpload) {
+                                  const result = await fileToUint8Array(file);
+                                  await addProductImage.mutateAsync({
+                                    productId: editingId,
+                                    imageData: result.bytes,
+                                    imageType: result.type || "image/jpeg",
+                                  });
+                                }
+                                toast.success(
+                                  toUpload.length > 1
+                                    ? `${toUpload.length} images added`
+                                    : "Image added",
+                                );
+                              } catch {
+                                toast.error("Failed to add image");
+                              } finally {
+                                setAddImagePending(false);
+                                if (addImageRef.current)
+                                  addImageRef.current.value = "";
+                              }
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => addImageRef.current?.click()}
+                            disabled={addImagePending}
+                            className="w-16 h-16 rounded border border-dashed border-gold-border/50 flex flex-col items-center justify-center gap-1 text-muted-foreground hover:border-gold hover:text-gold transition-colors disabled:opacity-50"
+                            data-ocid="admin.product.addimage.upload_button"
+                          >
+                            {addImagePending ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <ImagePlus className="w-4 h-4" />
+                            )}
+                            <span className="text-[9px]">Add</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="mt-3">
+                  <Button
+                    type="button"
+                    className="w-full btn-gold tracking-widest uppercase text-xs"
+                    onClick={() => {
+                      if (editingId !== null) {
+                        window.location.href = `/admin/product-images/${editingId}`;
+                      }
+                    }}
+                    data-ocid="admin.product.manage_images.button"
+                  >
+                    <ImagePlus className="w-4 h-4 mr-2" />
+                    Manage Images (Unlimited)
+                  </Button>
+                </div>
+              </>
+            )}
           </DialogContent>
         </Dialog>
       </div>
-
       {isLoading ? (
         <Skeleton className="h-48 w-full" />
       ) : (
@@ -967,6 +1208,7 @@ function OrdersTab() {
   const { data: orders, isLoading } = useAllOrders();
   const { data: users } = useAllUsers();
   const updateStatus = useUpdateOrderStatus();
+  const deleteOrder = useDeleteOrder();
   const { actor } = useActor();
   const [deliveryCodes, setDeliveryCodes] = useState<Record<string, string>>(
     {},
@@ -1024,7 +1266,13 @@ function OrdersTab() {
                   Status
                 </TableHead>
                 <TableHead className="text-gold-muted uppercase text-xs tracking-widest">
+                  Location
+                </TableHead>
+                <TableHead className="text-gold-muted uppercase text-xs tracking-widest">
                   Code
+                </TableHead>
+                <TableHead className="text-gold-muted uppercase text-xs tracking-widest">
+                  Delete
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -1032,7 +1280,7 @@ function OrdersTab() {
               {!orders?.length ? (
                 <TableRow>
                   <TableCell
-                    colSpan={6}
+                    colSpan={8}
                     className="text-center text-muted-foreground py-8"
                   >
                     No orders yet
@@ -1084,6 +1332,9 @@ function OrdersTab() {
                           </SelectContent>
                         </Select>
                       </TableCell>
+                      <TableCell className="text-muted-foreground text-xs max-w-[120px] truncate">
+                        {order.deliveryLocation || "—"}
+                      </TableCell>
                       <TableCell>
                         {code ? (
                           <span className="font-mono text-gold text-sm tracking-widest border border-gold-border px-2 py-0.5">
@@ -1100,6 +1351,31 @@ function OrdersTab() {
                           >
                             <Key className="w-3 h-3 mr-1" />
                             {generatingCode === order.id ? "..." : "Code"}
+                          </Button>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {order.status === "Delivered" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs border-red-800 text-red-400 hover:text-red-300 hover:border-red-600 px-2"
+                            onClick={async () => {
+                              try {
+                                await deleteOrder.mutateAsync(order.id);
+                                toast.success("Order deleted.");
+                              } catch (e) {
+                                toast.error(
+                                  e instanceof Error
+                                    ? e.message
+                                    : "Failed to delete order",
+                                );
+                              }
+                            }}
+                            disabled={deleteOrder.isPending}
+                            data-ocid={`admin.order.delete_button.${idx + 1}`}
+                          >
+                            <Trash2 className="w-3 h-3" />
                           </Button>
                         )}
                       </TableCell>
@@ -1611,6 +1887,71 @@ function SettingsTab() {
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+function InstagramTab() {
+  const { actor } = useActor();
+  const [handle, setHandle] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!actor) return;
+    actor
+      .getInstagramHandle()
+      .then((h: string) => setHandle(h))
+      .catch(() => {});
+  }, [actor]);
+
+  const handleSave = async () => {
+    if (!actor) return;
+    setSaving(true);
+    try {
+      const token = getAdminToken();
+      await actor.setInstagramHandle(token, handle.trim());
+      toast.success("Instagram handle saved");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="max-w-lg">
+      <h2 className="font-serif text-2xl text-gold uppercase tracking-widest mb-2">
+        Instagram Settings
+      </h2>
+      <p className="text-sm text-muted-foreground mb-6">
+        Your Instagram handle will appear in the footer of each reel, clickable
+        for customers.
+      </p>
+      <div className="card-luxury p-6 flex flex-col gap-4">
+        <div>
+          <Label className="text-xs tracking-widest uppercase text-muted-foreground mb-2 block">
+            Instagram Handle
+          </Label>
+          <Input
+            value={handle}
+            onChange={(e) => setHandle(e.target.value)}
+            placeholder="@meet_.enterprise"
+            className="bg-secondary border-gold-border"
+            data-ocid="admin.instagram.input"
+          />
+          <p className="text-xs text-muted-foreground mt-1">
+            Enter with or without @ — e.g. @meet_.enterprise or meet_.enterprise
+          </p>
+        </div>
+        <Button
+          className="btn-gold tracking-widest uppercase"
+          onClick={handleSave}
+          disabled={saving}
+          data-ocid="admin.instagram.save_button"
+        >
+          {saving ? "Saving..." : "Save Handle"}
+        </Button>
+      </div>
     </div>
   );
 }

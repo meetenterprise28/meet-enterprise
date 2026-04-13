@@ -3,12 +3,24 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { motion } from "motion/react";
+import { useEffect, useState } from "react";
 import { ProductCard } from "../components/ProductCard";
+import { TShirtMascot } from "../components/TShirtMascot";
+import { ThreeHero } from "../components/ThreeHero";
 import { useProducts } from "../hooks/useQueries";
 
 export function HomePage() {
   const navigate = useNavigate();
   const { data: products, isLoading: prodLoading } = useProducts();
+  const [mascotFollowing, setMascotFollowing] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setMascotFollowing(window.scrollY >= 200);
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   const displayProducts = products ? products.slice(0, 8) : [];
 
@@ -16,14 +28,17 @@ export function HomePage() {
     {
       src: "/assets/uploads/1781-photoaidcom-cropped.jpg-1.png",
       alt: "Meet Enterprises",
+      delay: "0s",
     },
     {
       src: "/assets/uploads/cropped_circle_image-2.png",
       alt: "Navkar Fashion",
+      delay: "1.3s",
     },
     {
       src: "/assets/uploads/cropped_circle_image-1--3.png",
       alt: "Jyoti Stores",
+      delay: "0.7s",
     },
   ];
 
@@ -38,17 +53,36 @@ export function HomePage() {
           backgroundPosition: "center",
         }}
       >
+        {/* Three.js 3D background */}
+        <ThreeHero />
+
         <motion.div
           initial={{ opacity: 0, y: 40 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.8, delay: 0.3 }}
           className="text-center px-4 max-w-4xl mx-auto"
+          style={{ position: "relative", zIndex: 1 }}
         >
           <p className="text-xs tracking-[0.4em] uppercase text-gold-muted mb-6">
             New Collection 2026
           </p>
-          <h1 className="font-serif text-5xl md:text-7xl lg:text-8xl text-gold uppercase leading-none tracking-tight mb-6">
+          <h1
+            className="font-serif text-5xl md:text-7xl lg:text-8xl text-gold uppercase leading-none tracking-tight mb-6"
+            style={{ position: "relative" }}
+          >
             Elevate Your Style
+            {!mascotFollowing && (
+              <span
+                style={{
+                  position: "absolute",
+                  right: "-10px",
+                  bottom: "-20px",
+                  zIndex: 50,
+                }}
+              >
+                <TShirtMascot anchored={true} />
+              </span>
+            )}
           </h1>
           <p className="text-muted-foreground text-lg md:text-xl max-w-2xl mx-auto mb-10 leading-relaxed">
             Discover premium fashion curated for the modern connoisseur
@@ -84,7 +118,11 @@ export function HomePage() {
           className="flex items-center justify-center gap-8 md:gap-16 flex-wrap"
         >
           {logos.map((logo) => (
-            <div key={logo.alt} className="relative group">
+            <div
+              key={logo.alt}
+              className="relative group float-slow"
+              style={{ animationDelay: logo.delay }}
+            >
               <div
                 className="rounded-full p-1"
                 style={{
@@ -106,7 +144,7 @@ export function HomePage() {
       </section>
 
       {/* Products Grid */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8">
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8 perspective-container">
         {prodLoading ? (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6">
             {Array.from({ length: 8 }, (_, i) => i + 1).map((i) => (
@@ -154,6 +192,9 @@ export function HomePage() {
           </div>
         )}
       </section>
+
+      {/* Fixed mascot – follows user after scrolling past hero */}
+      {mascotFollowing && <TShirtMascot anchored={false} />}
     </main>
   );
 }

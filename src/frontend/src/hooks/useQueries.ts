@@ -5,8 +5,8 @@ import type {
   OrderItem,
   PaymentSettings,
   Product,
-  ProductRating,
   ProductSummary,
+  RatingSummary,
   Reel,
   Scheme,
   UserProfile,
@@ -35,6 +35,7 @@ export function useCategories() {
     queryKey: ["categories"],
     queryFn: async () => (actor ? actor.getCategories() : []),
     enabled: !!actor,
+    staleTime: 0, // always fresh so newly added categories show immediately
   });
 }
 
@@ -54,6 +55,8 @@ export function useProducts() {
     },
     enabled: !!actor,
     retry: 2,
+    staleTime: 5 * 60 * 1000, // 5 min – avoid re-fetching on every page visit
+    gcTime: 10 * 60 * 1000,
   });
 }
 
@@ -82,11 +85,7 @@ export function useIsAdmin() {
     queryKey: ["isAdmin"],
     queryFn: async () => {
       if (!actor) return false;
-      try {
-        return await actor.isCallerAdmin();
-      } catch {
-        return false;
-      }
+      return false;
     },
     enabled: !!actor,
   });
@@ -147,6 +146,7 @@ export function useSchemes() {
     queryKey: ["schemes"],
     queryFn: async () => (actor ? actor.getSchemes() : []),
     enabled: !!actor,
+    staleTime: 5 * 60 * 1000,
   });
 }
 
@@ -158,11 +158,7 @@ export function useReels() {
     queryKey: ["reels"],
     queryFn: async () => {
       if (!actor) return [];
-      try {
-        return await actor.getReels();
-      } catch {
-        return [];
-      }
+      return await actor.getReels();
     },
     enabled: !!actor,
   });
@@ -170,7 +166,7 @@ export function useReels() {
 
 export function useProductRating(productId: bigint | null) {
   const { actor } = useActor();
-  return useQuery<ProductRating>({
+  return useQuery<RatingSummary>({
     queryKey: ["productRating", productId?.toString()],
     queryFn: async () => {
       if (!actor || productId == null) return { average: 0, count: BigInt(0) };
@@ -188,6 +184,7 @@ export function useProductRating(productId: bigint | null) {
       }
     },
     enabled: productId != null,
+    staleTime: 5 * 60 * 1000,
   });
 }
 
@@ -328,6 +325,19 @@ export function useUpdateOrderStatus() {
       requireActor(actor);
       const token = requireAdminToken();
       return actor.updateOrderStatus(token, orderId, status);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["allOrders"] }),
+  });
+}
+
+export function useDeleteOrder() {
+  const { actor } = useActor();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (orderId: string) => {
+      requireActor(actor);
+      const token = requireAdminToken();
+      return actor.deleteOrder(token, orderId);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["allOrders"] }),
   });
@@ -509,6 +519,85 @@ export function useDeleteReel() {
         (old || []).filter((r) => r.id !== id),
       );
       qc.invalidateQueries({ queryKey: ["reels"] });
+    },
+  });
+}
+
+export function useInstagramHandle() {
+  const { actor } = useActor();
+  return useQuery<string>({
+    queryKey: ["instagramHandle"],
+    queryFn: async () => {
+      if (!actor) return "";
+      try {
+        return await actor.getInstagramHandle();
+      } catch {
+        return "";
+      }
+    },
+    enabled: !!actor,
+  });
+}
+
+export interface ProductImage {
+  imageData: Uint8Array;
+  imageType: string;
+}
+
+export function useProductImages(productId: bigint | null) {
+  const { actor } = useActor();
+  return useQuery<ProductImage[]>({
+    queryKey: ["productImages", productId?.toString()],
+    queryFn: async () => {
+      if (!actor || productId == null) return [];
+      try {
+        return await actor.getProductImages(productId);
+      } catch {
+        return [];
+      }
+    },
+    enabled: !!actor && productId != null,
+    staleTime: 5 * 60 * 1000, // 5 min – images rarely change; prevents per-card refetch
+    gcTime: 15 * 60 * 1000,
+  });
+}
+
+export function useAddProductImage() {
+  const { actor } = useActor();
+  const qc = useQueryClient();
+  type AddImageVars = {
+    productId: bigint;
+    imageData: Uint8Array;
+    imageType: string;
+  };
+  return useMutation<unknown, Error, AddImageVars>({
+    mutationFn: async ({ productId, imageData, imageType }: AddImageVars) => {
+      requireActor(actor);
+      const token = requireAdminToken();
+      return actor.addProductImage(token, productId, imageData, imageType);
+    },
+    onSuccess: (_: unknown, { productId }: AddImageVars) => {
+      qc.invalidateQueries({
+        queryKey: ["productImages", productId.toString()],
+      });
+    },
+  });
+}
+
+export function useRemoveProductImage() {
+  const { actor } = useActor();
+  const qc = useQueryClient();
+  type RemoveImageVars = { productId: bigint; imageIndex: bigint };
+  return useMutation<unknown, Error, RemoveImageVars>({
+    mutationFn: async ({ productId, imageIndex }: RemoveImageVars) => {
+      requireActor(actor);
+      const token = requireAdminToken();
+      return actor.removeProductImage(token, productId, imageIndex);
+    },
+    onSuccess: (_: unknown, { productId }: RemoveImageVars) => {
+      qc.invalidateQueries({
+        queryKey: ["productImages", productId.toString()],
+      });
     },
   });
 }
